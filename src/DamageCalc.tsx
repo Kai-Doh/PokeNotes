@@ -165,27 +165,37 @@ function SpeedTiersView({ db }: { db: Database }) {
             <h3>Comparing {compareRows.length}</h3>
             <button type="button" className="ghost-btn" onClick={() => setCompareIds(new Set())}>Clear</button>
           </div>
-          <div className="speed-tier-list">
+          <div className="speed-tier-compare-cards">
             {compareRows.map((r, i) => {
               const prev = compareRows[i - 1];
               const gap = prev ? r.maxSpeed - prev.maxSpeed : null;
+              const fastest = compareRows[0].maxSpeed;
+              const barPct = fastest > 0 ? Math.max(6, Math.round((r.maxSpeed / fastest) * 100)) : 0;
               return (
-                <div key={r.pokemon.id} className="speed-tier-row speed-tier-row--pinned">
-                  <input
-                    type="checkbox"
-                    checked
-                    onChange={() => toggleCompare(r.pokemon.id)}
+                <div key={r.pokemon.id} className="speed-tier-card">
+                  <button
+                    type="button"
+                    className="speed-tier-card-remove"
+                    onClick={() => toggleCompare(r.pokemon.id)}
                     aria-label={`Remove ${r.pokemon.display_name} from comparison`}
-                  />
-                  {r.pokemon.sprite_default && <img src={r.pokemon.sprite_default} alt="" className="speed-tier-sprite" />}
-                  <span className="speed-tier-name">{r.pokemon.display_name}</span>
+                  >
+                    ×
+                  </button>
+                  <span className="speed-tier-card-rank">#{i + 1}</span>
+                  {r.pokemon.sprite_default && <img src={r.pokemon.sprite_default} alt="" className="speed-tier-card-sprite" />}
+                  <span className="speed-tier-card-name">{r.pokemon.display_name}</span>
                   <span className="battle-preview-types">
                     <TypeBadge type={r.pokemon.type1} />
                     {r.pokemon.type2 && <TypeBadge type={r.pokemon.type2} />}
                   </span>
-                  {gap != null && <span className="speed-tier-gap">{gap === 0 ? "tied" : `−${gap}`}</span>}
-                  <span className="speed-tier-max">{r.maxSpeed}</span>
-                  <span className="speed-tier-base">{r.baseSpeed} base</span>
+                  <span className="speed-tier-card-max">{r.maxSpeed}</span>
+                  <div className="speed-tier-card-bar-track">
+                    <div className="speed-tier-card-bar-fill" style={{ width: `${barPct}%` }} />
+                  </div>
+                  <span className="speed-tier-card-base">{r.baseSpeed} base</span>
+                  {gap != null && (
+                    <span className="speed-tier-card-gap">{gap === 0 ? "Tied" : `−${gap} vs #${i}`}</span>
+                  )}
                 </div>
               );
             })}

@@ -1331,12 +1331,103 @@ section h3 {
   font-size: 0.95rem;
 }
 
-.speed-tier-gap {
+.speed-tier-compare-cards {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+}
+
+.speed-tier-card {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.3rem;
+  width: 148px;
+  padding: 1.1rem 0.75rem 0.85rem;
+  border-radius: 12px;
+  border: 1px solid #3a3c5c;
+  background: linear-gradient(160deg, #2c2f45, #21222e);
+  text-align: center;
+}
+
+.speed-tier-card-remove {
+  position: absolute;
+  top: 0.35rem;
+  right: 0.4rem;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border-radius: 50%;
+  border: 1px solid #44465e;
+  background: #1e1f29;
+  color: #9a9ba5;
+  font-size: 0.9rem;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.speed-tier-card-remove:hover {
+  color: #e8e8ec;
+  border-color: #7c8cff;
+}
+
+.speed-tier-card-rank {
+  position: absolute;
+  top: 0.4rem;
+  left: 0.55rem;
+  font-size: 0.7rem;
+  font-weight: 700;
+  color: #7c8cff;
+}
+
+.speed-tier-card-sprite {
+  width: 56px;
+  height: 56px;
+  image-rendering: pixelated;
+}
+
+.speed-tier-card-name {
+  font-size: 0.85rem;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 100%;
+}
+
+.speed-tier-card-max {
+  font-variant-numeric: tabular-nums;
+  font-size: 1.4rem;
+  font-weight: 700;
+  color: #e8e8ec;
+  margin-top: 0.15rem;
+}
+
+.speed-tier-card-bar-track {
+  width: 100%;
+  height: 6px;
+  border-radius: 999px;
+  background: #14151b;
+  overflow: hidden;
+}
+
+.speed-tier-card-bar-fill {
+  height: 100%;
+  border-radius: 999px;
+  background: linear-gradient(90deg, #7c8cff, #a5b0ff);
+}
+
+.speed-tier-card-base {
   font-variant-numeric: tabular-nums;
   color: #9a9ba5;
-  font-size: 0.78rem;
-  min-width: 4.5ch;
-  text-align: right;
+  font-size: 0.72rem;
+}
+
+.speed-tier-card-gap {
+  font-variant-numeric: tabular-nums;
+  color: #ff8a8a;
+  font-size: 0.72rem;
 }
 
 .calc-page label {
