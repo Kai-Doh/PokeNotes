@@ -15,7 +15,10 @@
     "dialog:default",
     {
       "identifier": "http:default",
-      "allow": [{ "url": "https://replay.pokemonshowdown.com/*" }]
+      "allow": [
+        { "url": "https://replay.pokemonshowdown.com/*" },
+        { "url": "https://poke.kaidoh.ch/*" }
+      ]
     }
   ]
 }

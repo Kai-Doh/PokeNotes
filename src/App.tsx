@@ -11,6 +11,7 @@ import { getPokedexUpdatedAt, refreshPokedexData, seedDatabaseIfNeeded, type See
 import { getAbilitiesFor, getBattleFormVariants, getFormatLegalityFor, getLearnsetFor, listPokemon } from "./db/queries";
 import { listBattles } from "./db/battleQueries";
 import { listTeams } from "./db/teamQueries";
+import { clearSyncConfig, getSyncConfig, setSyncConfig, syncNow, type SyncConfig } from "./db/syncQueries";
 import { normalizeKey } from "./showdownFormat";
 import type { AbilityRef, FormatLegalityEntry, LearnsetMove, PokemonRow } from "./types/pokedex";
 import type { BattleListEntry } from "./types/battle";
@@ -512,10 +513,58 @@ function SettingsView({ db }: { db: Database }) {
   const [message, setMessage] = useState<string | null>(null);
   const [backupBusy, setBackupBusy] = useState(false);
   const [backupMessage, setBackupMessage] = useState<string | null>(null);
+  const [syncConfig, setSyncConfigState] = useState<SyncConfig | null>(null);
+  const [serverUrlInput, setServerUrlInput] = useState("");
+  const [tokenInput, setTokenInput] = useState("");
+  const [syncBusy, setSyncBusy] = useState(false);
+  const [syncMessage, setSyncMessage] = useState<string | null>(null);
 
   useEffect(() => {
     getPokedexUpdatedAt(db).then(setUpdatedAt);
+    getSyncConfig(db).then(setSyncConfigState);
   }, [db]);
+
+  async function handleSyncConnect() {
+    if (!serverUrlInput.trim() || !tokenInput.trim()) return;
+    setSyncBusy(true);
+    setSyncMessage(null);
+    try {
+      await setSyncConfig(db, serverUrlInput.trim(), tokenInput.trim());
+      setSyncConfigState(await getSyncConfig(db));
+      setTokenInput("");
+      const result = await syncNow(db);
+      setSyncMessage(`Connected. Synced ${result.pushed} pushed, ${result.pulled} pulled.`);
+    } catch (e) {
+      setSyncMessage(`Connection failed: ${String(e)}`);
+    } finally {
+      setSyncBusy(false);
+    }
+  }
+
+  async function handleSyncNow() {
+    setSyncBusy(true);
+    setSyncMessage(null);
+    try {
+      const result = await syncNow(db);
+      setSyncMessage(`Synced. ${result.pushed} pushed, ${result.pulled} pulled.`);
+    } catch (e) {
+      setSyncMessage(`Sync failed: ${String(e)}`);
+    } finally {
+      setSyncBusy(false);
+    }
+  }
+
+  async function handleSyncDisconnect() {
+    setSyncBusy(true);
+    setSyncMessage(null);
+    try {
+      await clearSyncConfig(db);
+      setSyncConfigState(await getSyncConfig(db));
+      setSyncMessage("Disconnected from sync server.");
+    } finally {
+      setSyncBusy(false);
+    }
+  }
 
   async function handleRefresh() {
     setRefreshing(true);
@@ -609,6 +658,40 @@ function SettingsView({ db }: { db: Database }) {
         {backupMessage && <p className="settings-message">{backupMessage}</p>}
       </section>
 
+      <section>
+        <h3>Multi-Device Sync</h3>
+        <p className="settings-hint">
+          Sync teams and battles with your other devices through your own self-hosted server.
+          Mint a device token on the server first, then connect below.
+        </p>
+        {syncConfig ? (
+          <>
+            <p className="settings-meta">Connected to {syncConfig.serverUrl}</p>
+            <button onClick={handleSyncNow} disabled={syncBusy}>{syncBusy ? "Syncing..." : "Sync Now"}</button>
+            <button className="ghost-btn" onClick={handleSyncDisconnect} disabled={syncBusy}>Disconnect</button>
+          </>
+        ) : (
+          <div className="sync-connect-form">
+            <input
+              type="text"
+              placeholder="https://pokenotes-sync.example.com"
+              value={serverUrlInput}
+              onChange={(e) => setServerUrlInput(e.target.value)}
+            />
+            <input
+              type="password"
+              placeholder="Device token"
+              value={tokenInput}
+              onChange={(e) => setTokenInput(e.target.value)}
+            />
+            <button onClick={handleSyncConnect} disabled={syncBusy || !serverUrlInput.trim() || !tokenInput.trim()}>
+              {syncBusy ? "Connecting..." : "Connect"}
+            </button>
+          </div>
+        )}
+        {syncMessage && <p className="settings-message">{syncMessage}</p>}
+      </section>
+
       <AppUpdateSection />
     </div>
   );
@@ -692,6 +775,14 @@ function App() {
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [sidebarOpen]);
+
+  useEffect(() => {
+    if (!db) return;
+    const tick = () => { syncNow(db).catch((e) => console.error("background sync failed", e)); };
+    tick();
+    const interval = setInterval(tick, 30_000);
+    return () => clearInterval(interval);
+  }, [db]);
 
   if (error) return <main className="container"><p className="error">Failed to load database: {error}</p></main>;
 
@@ -794,6 +885,24 @@ function App() {
         {view === "calc" && <DamageCalc db={db} />}
         {view === "settings" && <SettingsView db={db} />}
       </div>
+
+      {/* Bottom tab bar: the mobile nav pattern (CSS-only swap -- hidden on
+          desktop, replaces the hamburger + slide-in sidebar on narrow
+          viewports so the app reads as a native mobile app, not a shrunk
+          desktop site). Reuses the same NAV_ITEMS/SETTINGS_NAV_ITEM data and
+          click handlers as the sidebar above. */}
+      <nav className="bottom-tab-bar">
+        {[...NAV_ITEMS, SETTINGS_NAV_ITEM].map((item) => (
+          <button
+            key={item.id}
+            className={view === item.id ? "active" : ""}
+            onClick={() => setView(item.id)}
+          >
+            <span className="bottom-tab-icon">{item.icon}</span>
+            <span className="bottom-tab-label">{item.label}</span>
+          </button>
+        ))}
+      </nav>
     </main>
   );
 }

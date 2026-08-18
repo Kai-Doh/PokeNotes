@@ -64,6 +64,12 @@ fn migrations() -> Vec<Migration> {
             sql: include_str!("../migrations/0010_battle_my_pokemon_moves.sql"),
             kind: MigrationKind::Up,
         },
+        Migration {
+            version: 11,
+            description: "sync",
+            sql: include_str!("../migrations/0011_sync.sql"),
+            kind: MigrationKind::Up,
+        },
     ]
 }
 

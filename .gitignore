@@ -19,6 +19,10 @@ dist-ssr
 
 # Rust build output
 src-tauri/target
+sync-server/target
+
+# sync-server runtime SQLite db (local dev only -- real data lives on the VPS volume)
+sync-server/data/
 
 # App data / seed db working copy
 *.db-journal
