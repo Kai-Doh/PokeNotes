@@ -1231,6 +1231,47 @@ section h3 {
   padding: 1.5rem 2rem;
 }
 
+/* Speed Tiers keeps its header, controls, and pinned comparison panel
+   in place -- only the Pokémon list underneath scrolls -- so calc-page
+   itself must stop scrolling and hand that job to .speed-tier-scroll. */
+.calc-page--speed {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.speed-tier-page {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.speed-tier-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  margin: 0 -0.5rem;
+  padding: 0 0.5rem 0.5rem;
+}
+
+.speed-tier-scroll::-webkit-scrollbar {
+  width: 8px;
+}
+
+.speed-tier-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.speed-tier-scroll::-webkit-scrollbar-thumb {
+  background: #3a3c4a;
+  border-radius: 999px;
+}
+
+.speed-tier-scroll::-webkit-scrollbar-thumb:hover {
+  background: #4a4c5c;
+}
+
 .calc-mode-tabs {
   display: flex;
   gap: 0.5rem;
@@ -1254,6 +1295,7 @@ section h3 {
 }
 
 .speed-tier-controls {
+  flex-shrink: 0;
   display: flex;
   gap: 0.75rem;
   margin-bottom: 1rem;
@@ -1312,11 +1354,13 @@ section h3 {
 }
 
 .speed-tier-compare {
+  flex-shrink: 0;
   margin-bottom: 1.25rem;
   padding: 0.75rem;
   border-radius: 10px;
   border: 1px solid #33344a;
   background: #1e1f29;
+  box-shadow: 0 10px 16px -12px rgba(0, 0, 0, 0.6);
 }
 
 .speed-tier-compare-header {

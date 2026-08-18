@@ -140,7 +140,7 @@ function SpeedTiersView({ db }: { db: Database }) {
   };
 
   return (
-    <>
+    <div className="speed-tier-page">
       <h2>Speed Tiers</h2>
       <p className="settings-hint">
         Max = 252 EVs, 31 IV, +Speed nature at level {level}. Base = 0 EVs, neutral nature. Sorted by Max speed.
@@ -203,31 +203,33 @@ function SpeedTiersView({ db }: { db: Database }) {
         </div>
       )}
 
-      <div className="speed-tier-list">
-        {rows.map((r) => (
-          <div
-            key={r.pokemon.id}
-            className={"speed-tier-row" + (compareIds.has(r.pokemon.id) ? " speed-tier-row--pinned" : "")}
-          >
-            <input
-              type="checkbox"
-              checked={compareIds.has(r.pokemon.id)}
-              onChange={() => toggleCompare(r.pokemon.id)}
-              aria-label={`Compare ${r.pokemon.display_name}`}
-            />
-            {r.pokemon.sprite_default && <img src={r.pokemon.sprite_default} alt="" className="speed-tier-sprite" />}
-            <span className="speed-tier-name">{r.pokemon.display_name}</span>
-            <span className="battle-preview-types">
-              <TypeBadge type={r.pokemon.type1} />
-              {r.pokemon.type2 && <TypeBadge type={r.pokemon.type2} />}
-            </span>
-            <span className="speed-tier-max">{r.maxSpeed}</span>
-            <span className="speed-tier-base">{r.baseSpeed} base</span>
-          </div>
-        ))}
-        {rows.length === 0 && <p className="settings-hint">No Pokémon match.</p>}
+      <div className="speed-tier-scroll">
+        <div className="speed-tier-list">
+          {rows.map((r) => (
+            <div
+              key={r.pokemon.id}
+              className={"speed-tier-row" + (compareIds.has(r.pokemon.id) ? " speed-tier-row--pinned" : "")}
+            >
+              <input
+                type="checkbox"
+                checked={compareIds.has(r.pokemon.id)}
+                onChange={() => toggleCompare(r.pokemon.id)}
+                aria-label={`Compare ${r.pokemon.display_name}`}
+              />
+              {r.pokemon.sprite_default && <img src={r.pokemon.sprite_default} alt="" className="speed-tier-sprite" />}
+              <span className="speed-tier-name">{r.pokemon.display_name}</span>
+              <span className="battle-preview-types">
+                <TypeBadge type={r.pokemon.type1} />
+                {r.pokemon.type2 && <TypeBadge type={r.pokemon.type2} />}
+              </span>
+              <span className="speed-tier-max">{r.maxSpeed}</span>
+              <span className="speed-tier-base">{r.baseSpeed} base</span>
+            </div>
+          ))}
+          {rows.length === 0 && <p className="settings-hint">No Pokémon match.</p>}
+        </div>
       </div>
-    </>
+    </div>
   );
 }
 
@@ -275,7 +277,7 @@ export default function DamageCalc({ db }: { db: Database }) {
 
   if (mode === "speed") {
     return (
-      <div className="calc-page">
+      <div className="calc-page calc-page--speed">
         {modeTabs}
         <SpeedTiersView db={db} />
       </div>
