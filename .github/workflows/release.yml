@@ -1,0 +1,106 @@
+name: Release
+
+# Push a tag like "v0.3.0" (matching the version in package.json / tauri.conf.json)
+# to build the signed Windows installer and the signed Android APK, then attach
+# both to a draft GitHub Release for that tag. The Windows job creates the
+# release (via tauri-action, which also builds latest.json for the updater);
+# the Android job just uploads its APK onto that same release afterward.
+#
+# The release is left as a draft on purpose -- review the artifacts, then hit
+# "Publish" on the GitHub Releases page when ready. Desktop installs only
+# auto-update once a release is published (they poll releases/latest).
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+jobs:
+  release-windows:
+    runs-on: windows-latest
+    outputs:
+      release_id: ${{ steps.tauri-release.outputs.releaseId }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - run: npm ci
+
+      - name: Build and release (Windows)
+        id: tauri-release
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          tagName: ${{ github.ref_name }}
+          releaseName: "PokeNotes ${{ github.ref_name }}"
+          releaseDraft: true
+          prerelease: false
+          includeUpdaterJson: true
+
+  release-android:
+    needs: release-windows
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: android-actions/setup-android@v3
+
+      - name: Install Android NDK
+        run: sdkmanager --install "ndk;27.2.12479018"
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android,armv7-linux-androideabi,i686-linux-android,x86_64-linux-android
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - run: npm ci
+
+      - name: Write Android release-signing keystore
+        run: |
+          mkdir -p .tauri-keys
+          echo "${{ secrets.ANDROID_KEYSTORE_BASE64 }}" | base64 -d > .tauri-keys/pokenotes-release.keystore
+          cat > .tauri-keys/pokenotes-release.keystore.properties <<EOF
+          storeFile=$GITHUB_WORKSPACE/.tauri-keys/pokenotes-release.keystore
+          storePassword=${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          keyAlias=${{ secrets.ANDROID_KEY_ALIAS }}
+          keyPassword=${{ secrets.ANDROID_KEY_PASSWORD }}
+          EOF
+
+      - name: Build Android release APK
+        env:
+          NDK_HOME: ${{ env.ANDROID_HOME }}/ndk/27.2.12479018
+        run: npx tauri android build
+
+      - name: Upload APK to the release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          apk=$(find src-tauri/gen/android -iname "*universal-release*.apk" -o -iname "app-universal-release.apk" | head -n1)
+          gh release upload "${{ github.ref_name }}" "$apk#PokeNotes_${{ github.ref_name }}_android-universal.apk" --clobber -R "${{ github.repository }}"
