@@ -1229,7 +1229,6 @@ section h3 {
   min-height: 0;
   overflow-y: auto;
   padding: 1.5rem 2rem;
-  max-width: 900px;
 }
 
 .calc-mode-tabs {
