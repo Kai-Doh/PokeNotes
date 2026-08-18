@@ -42,7 +42,8 @@ export interface TeamMemberDisplay extends TeamMember {
   base_spd: number;
   base_spe: number;
   item_name: string | null;
-  item_sprite: string | null;
+  item_sprite_x: number | null;
+  item_sprite_y: number | null;
   ability_name: string | null;
   move1_name: string | null;
   move2_name: string | null;

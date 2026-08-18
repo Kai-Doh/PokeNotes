@@ -13,6 +13,17 @@ val tauriProperties = Properties().apply {
     }
 }
 
+// Release-signing keystore lives outside the repo (.tauri-keys/, gitignored)
+// -- never commit it. Falls back to an unsigned release build if the file
+// isn't present (e.g. on another machine without the keystore), rather than
+// failing the whole build.
+val releaseKeystoreProperties = Properties().apply {
+    val propFile = rootProject.file("../../../.tauri-keys/pokenotes-release.keystore.properties")
+    if (propFile.exists()) {
+        propFile.inputStream().use { load(it) }
+    }
+}
+
 android {
     compileSdk = 36
     namespace = "ch.kaidoh.pokenotes"
@@ -23,6 +34,16 @@ android {
         targetSdk = 36
         versionCode = tauriProperties.getProperty("tauri.android.versionCode", "1").toInt()
         versionName = tauriProperties.getProperty("tauri.android.versionName", "1.0")
+    }
+    signingConfigs {
+        if (releaseKeystoreProperties.containsKey("storeFile")) {
+            create("release") {
+                storeFile = file(releaseKeystoreProperties["storeFile"] as String)
+                storePassword = releaseKeystoreProperties["storePassword"] as String
+                keyAlias = releaseKeystoreProperties["keyAlias"] as String
+                keyPassword = releaseKeystoreProperties["keyPassword"] as String
+            }
+        }
     }
     buildTypes {
         getByName("debug") {
@@ -38,6 +59,9 @@ android {
         }
         getByName("release") {
             isMinifyEnabled = true
+            if (releaseKeystoreProperties.containsKey("storeFile")) {
+                signingConfig = signingConfigs.getByName("release")
+            }
             proguardFiles(
                 *fileTree(".") { include("**/*.pro") }
                     .plus(getDefaultProguardFile("proguard-android-optimize.txt"))

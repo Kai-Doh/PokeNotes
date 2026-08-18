@@ -41,7 +41,7 @@ const TABLE_SPECS: { table: string; file: string; columns: string[] }[] = [
   {
     table: "items",
     file: "items",
-    columns: ["id", "name", "display_name", "category", "is_battle_item", "short_effect", "effect", "sprite", "generation"],
+    columns: ["id", "name", "display_name", "category", "is_battle_item", "short_effect", "effect", "sprite_x", "sprite_y", "generation"],
   },
   {
     table: "formats",
@@ -52,6 +52,11 @@ const TABLE_SPECS: { table: string; file: string; columns: string[] }[] = [
     table: "format_legality",
     file: "format_legality",
     columns: ["format_id", "pokemon_id", "status", "tier", "notes"],
+  },
+  {
+    table: "item_legality",
+    file: "item_legality",
+    columns: ["format_id", "item_id", "status"],
   },
   {
     table: "learnsets",
@@ -72,6 +77,11 @@ const TABLE_SPECS: { table: string; file: string; columns: string[] }[] = [
     table: "ability_usage",
     file: "ability_usage",
     columns: ["format_id", "pokemon_id", "ability_id", "usage_pct"],
+  },
+  {
+    table: "move_usage",
+    file: "move_usage",
+    columns: ["format_id", "pokemon_id", "move_id", "usage_pct"],
   },
 ];
 
@@ -192,6 +202,18 @@ async function fetchRemoteSeed(file: string): Promise<unknown[]> {
  */
 export async function refreshPokedexData(db: Database, onProgress?: OnProgress): Promise<void> {
   await loadPokedexTables(db, fetchRemoteSeed, onProgress, true);
+}
+
+/**
+ * Force-reloads the pokedex dataset from the bundled local seed files (the
+ * same ones a fresh install seeds from), overwriting the reference tables in
+ * place -- unlike wiping the whole database, this never touches teams or the
+ * battle log. Meant for local development: testing a pipeline change against
+ * regenerated public/seed/*.json without a GitHub round-trip, or recovering
+ * from a bad refreshPokedexData() pull without losing user data.
+ */
+export async function reloadLocalPokedexData(db: Database, onProgress?: OnProgress): Promise<void> {
+  await loadPokedexTables(db, fetchLocalSeed, onProgress, true);
 }
 
 export async function getPokedexUpdatedAt(db: Database): Promise<string | null> {

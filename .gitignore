@@ -12,9 +12,10 @@ dist
 dist-ssr
 *.local
 
-# Tauri updater signing key - NEVER commit the private key
-.tauri-keys/*.key
-!.tauri-keys/*.key.pub
+# Signing keys (Tauri updater key + Android release keystore) - NEVER commit
+# private key material. Everything in here is secret except the .pub file.
+.tauri-keys/*
+!.tauri-keys/*.pub
 
 # Rust build output
 src-tauri/target

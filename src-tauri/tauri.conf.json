@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "PokeNotes",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "identifier": "ch.kaidoh.pokenotes",
   "build": {
     "beforeDevCommand": "npm run dev",
@@ -40,7 +40,7 @@
       "endpoints": [
         "https://github.com/Kai-Doh/PokeNotes/releases/latest/download/latest.json"
       ],
-      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDRFMTdGQUFBRDJFQkE3NDQKUldSRXArdlNxdm9YVHBlT0xMQTF3YmhWYm4rQjlQQXpoVVF2SnVWZG8zWmt0WUx1dzh3WEpiNXEK"
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEIyNTg2QTY3NTc0MEQ3RDEKUldUUjEwQlhaMnBZc3M5VTdyRWFTVUVlQzB3cWFLa0J2MG5QY25uckoweldndGVJZGsrYjRLY2gK"
     }
   }
 }

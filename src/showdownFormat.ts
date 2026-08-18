@@ -129,21 +129,19 @@ export function parseShowdownTeam(text: string): ParsedShowdownSet[] {
 
 // ---------- Resolve + save ----------
 
-function normalizeKey(s: string): string {
+export function normalizeKey(s: string): string {
   return s.toLowerCase().replace(/[^a-z0-9]/g, "");
 }
 
-export interface ImportResult {
-  imported: number;
-  warnings: string[];
+export interface NameLookups {
+  pokemonByKey: Map<string, number>;
+  itemByKey: Map<string, number>;
+  abilityByKey: Map<string, number>;
+  moveByKey: Map<string, number>;
 }
 
-/** Replaces the team's entire roster (slots 1-6) with the parsed Showdown text. */
-export async function importShowdownTeam(db: Database, teamId: number, text: string): Promise<ImportResult> {
-  const parsedSets = parseShowdownTeam(text).slice(0, 6);
-  const warnings: string[] = [];
-  if (parsedSets.length === 0) return { imported: 0, warnings: ["No Pokémon found in the pasted text."] };
-
+/** Builds normalized-name -> id lookup maps for resolving Showdown text (team exports, replay logs) against our catalog. */
+export async function buildNameLookups(db: Database): Promise<NameLookups> {
   const [allPokemon, allItems, allAbilities, allMoves] = await Promise.all([
     db.select<{ id: number; showdown_name: string | null; display_name: string }[]>(
       "SELECT id, showdown_name, display_name FROM pokemon",
@@ -163,6 +161,22 @@ export async function importShowdownTeam(db: Database, teamId: number, text: str
   const itemByKey = new Map(allItems.map((i) => [normalizeKey(i.display_name), i.id]));
   const abilityByKey = new Map(allAbilities.map((a) => [normalizeKey(a.display_name), a.id]));
   const moveByKey = new Map(allMoves.map((m) => [normalizeKey(m.display_name), m.id]));
+
+  return { pokemonByKey, itemByKey, abilityByKey, moveByKey };
+}
+
+export interface ImportResult {
+  imported: number;
+  warnings: string[];
+}
+
+/** Replaces the team's entire roster (slots 1-6) with the parsed Showdown text. */
+export async function importShowdownTeam(db: Database, teamId: number, text: string): Promise<ImportResult> {
+  const parsedSets = parseShowdownTeam(text).slice(0, 6);
+  const warnings: string[] = [];
+  if (parsedSets.length === 0) return { imported: 0, warnings: ["No Pokémon found in the pasted text."] };
+
+  const { pokemonByKey, itemByKey, abilityByKey, moveByKey } = await buildNameLookups(db);
 
   for (let slot = 1; slot <= 6; slot++) {
     await db.execute("DELETE FROM team_members WHERE team_id = ? AND slot = ?", [teamId, slot]);

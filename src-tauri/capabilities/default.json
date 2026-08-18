@@ -11,6 +11,11 @@
     "sql:default",
     "sql:allow-execute",
     "log:default",
-    "os:default"
+    "os:default",
+    "dialog:default",
+    {
+      "identifier": "http:default",
+      "allow": [{ "url": "https://replay.pokemonshowdown.com/*" }]
+    }
   ]
 }

@@ -17,7 +17,7 @@ import * as cheerio from "cheerio";
 // doesn't yet know about the "Champions" formats/mod at all. It's CommonJS,
 // hence the default-import + destructure instead of a named import.
 import PokemonShowdown from "pokemon-showdown";
-const { Dex: SimDex } = PokemonShowdown;
+const { Dex: SimDex, TeamValidator, toID } = PokemonShowdown;
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const CACHE_DIR = path.join(__dirname, ".cache");
@@ -25,9 +25,6 @@ const OUT_DIR = path.join(__dirname, "..", "public", "seed");
 const CSV_BASE = "https://raw.githubusercontent.com/PokeAPI/pokeapi/master/data/v2/csv";
 const SPRITE_BASE = "https://raw.githubusercontent.com/PokeAPI/sprites/master/sprites/pokemon";
 const EN = "9"; // PokeAPI english language_id
-
-// Gen 9 version groups whose learnsets we care about (current-gen play).
-const LEARNSET_VERSION_GROUPS = new Set(["25", "26", "27", "32"]); // scarlet-violet, teal mask, indigo disk, champions
 
 async function fetchCsv(name) {
   const cachePath = path.join(CACHE_DIR, `${name}.csv`);
@@ -42,6 +39,35 @@ async function fetchCsv(name) {
     await writeFile(cachePath, text, "utf-8");
   }
   return parse(text, { columns: true, skip_empty_lines: true, relax_quotes: true });
+}
+
+// Showdown's own item-icon spritesheet is complete and always current (it's
+// what the real Showdown client renders) -- PokeAPI's community per-file
+// sprite repo has caught up on individual images for only ~80% of held
+// items, missing some surprisingly common ones (Booster Energy, Loaded
+// Dice, Rusted Sword/Shield). `items.js` is a live-generated CommonJS file
+// (not JSON -- has to be executed, not parsed) exposing `spritenum` per
+// item, which maps into a 16-column, 24px-per-cell grid in
+// sprites/itemicons-sheet.png.
+async function fetchShowdownItemSpritenums() {
+  const cachePath = path.join(CACHE_DIR, "showdown-items.cjs");
+  let text;
+  if (existsSync(cachePath)) {
+    text = await readFile(cachePath, "utf-8");
+  } else {
+    const res = await fetch("https://play.pokemonshowdown.com/data/items.js");
+    if (!res.ok) throw new Error(`Failed to fetch Showdown items.js: ${res.status}`);
+    text = await res.text();
+    await mkdir(CACHE_DIR, { recursive: true });
+    await writeFile(cachePath, text, "utf-8");
+  }
+  const sandboxExports = {};
+  new Function("exports", text)(sandboxExports);
+  const spritenumByKey = new Map();
+  for (const item of Object.values(sandboxExports.BattleItems || {})) {
+    if (typeof item.spritenum === "number") spritenumByKey.set(normalizeUsageKey(item.name), item.spritenum);
+  }
+  return spritenumByKey;
 }
 
 function toMap(rows, keyField) {
@@ -258,7 +284,7 @@ function parseUsageRows($, table) {
   return rows;
 }
 
-async function scrapeUsageStats(formatFid, regSlug, outPokemon, outItems, outAbilities) {
+async function scrapeUsageStats(formatFid, regSlug, outPokemon, outItems, outAbilities, outMoves) {
   // LimitlessVGC's URL slugs (e.g. "floette-eternal") strip to the same bare,
   // lowercase, hyphen-free id Showdown uses internally ("floetteeternal"),
   // which is exactly what showdown_id already holds -- far more reliable
@@ -266,6 +292,7 @@ async function scrapeUsageStats(formatFid, regSlug, outPokemon, outItems, outAbi
   const pokemonByShowdownId = new Map(outPokemon.map((p) => [p.showdown_id, p]));
   const itemByKey = new Map(outItems.map((it) => [normalizeUsageKey(it.display_name), it.id]));
   const abilityByKey = new Map(outAbilities.map((a) => [normalizeUsageKey(a.display_name), a.id]));
+  const moveByKey = new Map(outMoves.map((m) => [normalizeUsageKey(m.display_name), m.id]));
 
   console.log(`  Fetching ranking for format=${regSlug}...`);
   const rankingHtml = await fetchLimitlessHtml(`/pokemon?format=${regSlug}&show=100`);
@@ -294,6 +321,7 @@ async function scrapeUsageStats(formatFid, regSlug, outPokemon, outItems, outAbi
 
   const itemUsage = [];
   const abilityUsage = [];
+  const moveUsage = [];
   for (const { slug, pokemonId } of targets) {
     let detailHtml;
     try {
@@ -305,20 +333,23 @@ async function scrapeUsageStats(formatFid, regSlug, outPokemon, outItems, outAbi
     const $$ = cheerio.load(detailHtml);
     $$("table.data-table").each((_, table) => {
       const header = $$(table).find("thead th").first().text().trim();
-      if (header !== "Items" && header !== "Abilities") return;
+      if (header !== "Items" && header !== "Abilities" && header !== "Moves") return;
       for (const { name, pct } of parseUsageRows($$, table)) {
         if (header === "Items") {
           const itemId = itemByKey.get(normalizeUsageKey(name));
           if (itemId) itemUsage.push({ format_id: formatFid, pokemon_id: pokemonId, item_id: itemId, usage_pct: pct });
-        } else {
+        } else if (header === "Abilities") {
           const abilityId = abilityByKey.get(normalizeUsageKey(name));
           if (abilityId) abilityUsage.push({ format_id: formatFid, pokemon_id: pokemonId, ability_id: abilityId, usage_pct: pct });
+        } else {
+          const moveId = moveByKey.get(normalizeUsageKey(name));
+          if (moveId) moveUsage.push({ format_id: formatFid, pokemon_id: pokemonId, move_id: moveId, usage_pct: pct });
         }
       }
     });
   }
 
-  return { pokemonUsage, itemUsage, abilityUsage };
+  return { pokemonUsage, itemUsage, abilityUsage, moveUsage };
 }
 
 async function main() {
@@ -340,8 +371,6 @@ async function main() {
     moveEffectProse,
     moveFlagMap,
     moveFlags,
-    pokemonMoves,
-    moveMethods,
     items,
     itemNames,
     itemProse,
@@ -364,8 +393,6 @@ async function main() {
     fetchCsv("move_effect_prose"),
     fetchCsv("move_flag_map"),
     fetchCsv("move_flags"),
-    fetchCsv("pokemon_moves"),
-    fetchCsv("pokemon_move_methods"),
     fetchCsv("items"),
     fetchCsv("item_names"),
     fetchCsv("item_prose"),
@@ -556,6 +583,7 @@ async function main() {
 
   // --- Items ---
   console.log("Building items...");
+  const showdownItemSpritenums = await fetchShowdownItemSpritenums();
   const latestFlavorByItem = new Map();
   for (const r of itemFlavorText) {
     if (r.language_id !== EN) continue;
@@ -567,13 +595,23 @@ async function main() {
   // competitive HELD items -- everything else (Poke Balls, key items, TMs,
   // vitamins, mail, evolution stones, apricorns, etc.) is real PokeAPI data
   // but not something you'd ever actually hold in a battle, so it just
-  // clutters the team builder's item search.
+  // clutters the team builder's item search. "dynamax-crystals" was removed
+  // after inspection: it's 300 Crown Tundra (Sword/Shield) wild-area event
+  // items that spawn a specific raid encounter ("causes [X] to appear from
+  // the Watchtower Lair..."), not held items at all -- PokeAPI hasn't even
+  // localized display names for most of them (codenames like "★And458").
   const BATTLE_ITEM_CATEGORIES = new Set([
     "held-items", "choice", "type-enhancement", "plates", "species-specific",
-    "mega-stones", "z-crystals", "memories", "dynamax-crystals", "jewels",
+    "mega-stones", "z-crystals", "memories", "jewels",
     "bad-held-items", "effort-drop", "medicine", "in-a-pinch", "picky-healing",
     "type-protection",
   ]);
+  // Fallback for items PokeAPI hasn't localized an English display name for
+  // yet (usually very recently added ones, e.g. new Mega Stones) -- title
+  // cases the raw identifier instead of leaving it as a lowercase slug.
+  function titleCaseFallback(identifier) {
+    return identifier.split("-").map((w) => (w ? w[0].toUpperCase() + w.slice(1) : w)).join(" ");
+  }
   const seenItemNames = new Set();
   const outItems = [];
   for (const it of items) {
@@ -585,43 +623,34 @@ async function main() {
     const prose = itemProse.find((r) => r.item_id === it.id && r.local_language_id === EN);
     const flavor = latestFlavorByItem.get(it.id);
     const categoryName = categoryNameById.get(it.category_id)?.identifier || null;
+    const displayName = englishName(itemNames, "item_id", it.id) || titleCaseFallback(it.identifier);
+    const spritenum = showdownItemSpritenums.get(normalizeUsageKey(displayName));
+    // PokeAPI's category alone isn't a reliable "real held item" signal --
+    // it's produced junk twice already (the whole dynamax-crystals category,
+    // and stray non-items like "Blank Plate"/"Legend Plate" that don't exist
+    // anywhere in Showdown's own item list, not even as a past-gen entry).
+    // Requiring the item to also exist in Showdown's BattleItems -- the
+    // actual battle simulator's own item database -- is a much stronger
+    // "can this really be held in a fight" check than a PokeAPI category ever
+    // was, and it's data we already fetch for the icon spritesheet above.
+    const knownToShowdown = spritenum !== undefined;
     outItems.push({
       id: Number(it.id),
       name,
-      display_name: englishName(itemNames, "item_id", it.id) || it.identifier,
+      display_name: displayName,
       category: categoryName,
-      is_battle_item: categoryName && BATTLE_ITEM_CATEGORIES.has(categoryName) ? 1 : 0,
+      is_battle_item: categoryName && BATTLE_ITEM_CATEGORIES.has(categoryName) && knownToShowdown ? 1 : 0,
       short_effect: prose?.short_effect || flavor?.flavor_text?.replace(/\n|\f/g, " ") || null,
       effect: prose?.effect || null,
-      sprite: `https://raw.githubusercontent.com/PokeAPI/sprites/master/sprites/items/${it.identifier}.png`,
+      sprite_x: knownToShowdown ? (spritenum % 16) * 24 : null,
+      sprite_y: knownToShowdown ? Math.floor(spritenum / 16) * 24 : null,
       generation: null,
     });
   }
-
-  // --- Learnsets (current-gen version groups only) ---
-  console.log("Building learnsets...");
-  const validPokemonIds = new Set(outPokemon.map((p) => p.id));
-  const methodName = toMap(moveMethods, "id");
-  const learnsetKey = (pid, mid, method) => `${pid}|${mid}|${method}`;
-  const learnsetMap = new Map();
-  for (const pm of pokemonMoves) {
-    if (!LEARNSET_VERSION_GROUPS.has(pm.version_group_id)) continue;
-    if (!validPokemonIds.has(Number(pm.pokemon_id))) continue;
-    const method = methodName.get(pm.pokemon_move_method_id)?.identifier || "other";
-    const key = learnsetKey(pm.pokemon_id, pm.move_id, method);
-    const level = pm.level ? Number(pm.level) : null;
-    const existing = learnsetMap.get(key);
-    if (!existing || (level !== null && (existing.level === null || level < existing.level))) {
-      learnsetMap.set(key, {
-        pokemon_id: Number(pm.pokemon_id),
-        move_id: Number(pm.move_id),
-        method,
-        level,
-        generation: 9,
-      });
-    }
-  }
-  const outLearnsets = [...learnsetMap.values()];
+  const droppedByShowdownCheck = outItems.filter(
+    (it) => it.category && BATTLE_ITEM_CATEGORIES.has(it.category) && it.is_battle_item === 0,
+  ).length;
+  console.log(`  ${droppedByShowdownCheck} PokeAPI "battle item"-category items aren't real items in Showdown -- excluded.`);
 
   // --- Showdown tiers -> formats + format_legality ---
   console.log("Matching Showdown tiers via @pkmn/dex...");
@@ -661,6 +690,74 @@ async function main() {
     console.log(`  -> unmatched names written to scripts/.cache/unmatched-showdown-ids.json`);
   }
 
+  // --- Learnsets: sourced from Showdown's own historical learnset data,
+  // not PokeAPI's bulk pokemon_moves table.
+  //
+  // PokeAPI's only Gen-9-tagged source (the "champions" version group) turns
+  // out to route every single one of its ~19.8k rows through one non-standard
+  // "train" method with no level/machine/egg/tutor breakdown, and it invents
+  // moves Showdown doesn't recognize for that species in any generation
+  // (e.g. Roost on Charizard). An earlier fix excluded that method outright
+  // to avoid the bad entries -- but it was the *only* PokeAPI Gen-9 source
+  // for roughly a third of the dex, so excluding it left ~460 species with
+  // literally zero moves (Onix, Mawile, Caterpie, ...).
+  //
+  // Showdown's own learnset data (data/learnsets.ts, via the same
+  // pokemon-showdown package already used for tiers/legality elsewhere in
+  // this script) doesn't have either problem: it's per-species accurate, and
+  // it's comprehensive across every generation the move was ever learnable
+  // in -- which is what a reference Pokédex should show, independent of
+  // which specific format currently allows the species.
+  console.log("Building learnsets from Showdown's own learnset data...");
+  const moveIdByShowdownId = new Map(outMoves.map((m) => [m.name, m.id]));
+
+  // Battle-only forms (Mega/Gmax/Primal/...) have no learnset of their own in
+  // Showdown's data -- the move pool belongs to the base species, since the
+  // form change only happens mid-battle. Falls back through baseSpecies
+  // (normalized to a Showdown id) until it finds one, same as the app's own
+  // runtime fallback for these forms.
+  function getLearnsetDataFor(showdownId, depth = 0) {
+    if (!showdownId || depth > 4) return null;
+    const data = SimDex.species.getLearnsetData(showdownId);
+    if (data?.exists && data.learnset && Object.keys(data.learnset).length > 0) return data;
+    const species = SimDex.species.get(showdownId);
+    if (species?.exists && species.baseSpecies) {
+      const baseId = toID(species.baseSpecies);
+      if (baseId && baseId !== showdownId) return getLearnsetDataFor(baseId, depth + 1);
+    }
+    return null;
+  }
+
+  const outLearnsets = [];
+  let unresolvedMoveNames = 0;
+  let speciesWithNoLearnsetData = 0;
+  for (const p of outPokemon) {
+    const data = getLearnsetDataFor(p.showdown_id);
+    if (!data) { speciesWithNoLearnsetData++; continue; }
+    for (const [moveShowdownId, codes] of Object.entries(data.learnset)) {
+      const moveId = moveIdByShowdownId.get(moveShowdownId);
+      if (!moveId) { unresolvedMoveNames++; continue; }
+
+      // Each code is like "9L36" (gen 9, level-up at 36), "8M" (machine),
+      // "7E" (egg), "6T" (tutor), "3S0" (event), etc. -- prefer level-up
+      // (using the lowest level seen across every gen's code for it), else
+      // egg, else tutor, else machine, else bucket the rest as "other".
+      const levels = codes.filter((c) => /L\d+$/.test(c)).map((c) => Number(c.match(/L(\d+)$/)[1]));
+      let method = "other";
+      let level = null;
+      if (levels.length > 0) { method = "level-up"; level = Math.min(...levels); }
+      else if (codes.some((c) => c.includes("E"))) method = "egg";
+      else if (codes.some((c) => c.includes("T"))) method = "tutor";
+      else if (codes.some((c) => c.includes("M"))) method = "machine";
+
+      outLearnsets.push({ pokemon_id: p.id, move_id: moveId, method, level, generation: 9 });
+    }
+  }
+  console.log(
+    `  ${outLearnsets.length} learnset rows across ${outPokemon.length - speciesWithNoLearnsetData}/${outPokemon.length} species `
+    + `(${speciesWithNoLearnsetData} with no Showdown learnset data at all; ${unresolvedMoveNames} move-id lookups skipped).`,
+  );
+
   // Showdown format rulesets sometimes inherit clauses by referencing another
   // format's name (e.g. "National Dex UU"'s ruleset is just ["[Gen 9] National
   // Dex"]) rather than repeating them, so detecting a banned mechanic means
@@ -682,6 +779,41 @@ async function main() {
       if (ref && ref.exists && ref.id !== f.id && isTeraBanned(ref.id, depth + 1)) return true;
     }
     return false;
+  }
+
+  // Gigantamax is a Gen 8 mechanic that doesn't exist in Gen 9 games at all
+  // (no Dynamax action, official or otherwise) -- Showdown itself reflects
+  // this by giving every Gmax species an "Illegal" tier rather than a real
+  // one. Checking that directly (instead of just assuming every Gmax form is
+  // fine, or hardcoding a banlist) means this self-corrects if Showdown ever
+  // ships a mod where Dynamax is legal again.
+  function isGmaxUsable(showdownId) {
+    const species = SimDex.species.get(showdownId);
+    return !!species?.exists && species.tier !== "Illegal";
+  }
+
+  // Whether a held item is actually usable in a given format: some items
+  // exist in the game data but not in Gen 9 at all (isNonstandard "Past",
+  // e.g. Mega Stones outside National Dex), and some are banned per-format
+  // on top of that (e.g. Ability Shield under the Champions ruleset). Both
+  // are only resolvable by asking Showdown's real team validator -- a
+  // format's ruleset/mod combination is too involved to reimplement by hand.
+  // Runs a throwaway set through validateSet and checks whether the *item*
+  // specifically got flagged, ignoring unrelated problems (species/EVs/etc)
+  // from the placeholder species -- Incineroar was picked because it's not
+  // itself banned or nonexistent in any format this pipeline builds.
+  function isItemLegal(validator, itemDisplayName) {
+    const set = {
+      name: "X", species: "Incineroar", item: itemDisplayName, ability: "Intimidate",
+      moves: ["Protect"], nature: "Serious", level: 50,
+      evs: { hp: 0, atk: 0, def: 0, spa: 0, spd: 0, spe: 0 },
+      ivs: { hp: 31, atk: 31, def: 31, spa: 31, spd: 31, spe: 31 },
+    };
+    const problems = validator.validateSet(set, {}) || [];
+    return !problems.some(
+      (p) => p.includes(itemDisplayName)
+        && (p.includes("does not exist") || p.includes("banned") || p.includes("unreleased") || p.includes("cannot be used")),
+    );
   }
 
   function buildRuleset(code) {
@@ -708,9 +840,14 @@ async function main() {
   const formats = [];
   const formatLegality = [];
   let formatId = 1;
+  // Every format_id's underlying live Showdown format code, so item legality
+  // (below, after the format list is final) can build a real TeamValidator
+  // per format instead of guessing from banlists alone.
+  const formatShowdownCode = new Map();
 
   function addTierFormat(code, name, order, tierField, isDoubles) {
     const fid = formatId++;
+    formatShowdownCode.set(fid, code);
     formats.push({ id: fid, code, name, source: "showdown", generation: 9, is_doubles: isDoubles ? 1 : 0, ruleset: buildRuleset(code) });
     const rank = order.indexOf(tierField.target);
     for (const p of outPokemon) {
@@ -780,6 +917,7 @@ async function main() {
         {
           code: "official-current",
           name: currentChampionsVgc ? `VGC / Pokemon Champions (${currentChampionsVgc.name.replace(/^\[Gen 9 Champions\] /, "")})` : "VGC / Pokemon Champions (Current)",
+          sourceFormat: currentChampionsVgc,
           ruleset: buildOfficialRuleset(
             currentChampionsVgc,
             "Showdown's plain VGC ladder and the Champions ladder currently share this ruleset (the plain ladder is retired), so this single format covers battles logged from either source.",
@@ -790,11 +928,13 @@ async function main() {
         {
           code: "champions-current",
           name: `Pokemon Champions (${currentChampionsVgc.name.replace(/^\[Gen 9 Champions\] /, "")})`,
+          sourceFormat: currentChampionsVgc,
           ruleset: buildOfficialRuleset(currentChampionsVgc),
         },
         {
           code: "vgc-current",
           name: `VGC (${currentPlainVgc.name.replace(/^\[Gen 9\] /, "")})`,
+          sourceFormat: currentPlainVgc,
           ruleset: buildOfficialRuleset(currentPlainVgc),
         },
       ];
@@ -804,10 +944,12 @@ async function main() {
   let usageFormatFid = null;
   for (const of of officialFormats) {
     const fid = formatId++;
+    if (of.sourceFormat) formatShowdownCode.set(fid, of.sourceFormat.id);
     formats.push({ id: fid, code: of.code, name: of.name, source: "official", generation: 9, is_doubles: 1, ruleset: of.ruleset });
     if (of.code === "official-current" || of.code === "champions-current") usageFormatFid = fid;
     for (const p of outPokemon) {
       if (!p.is_default_form && p.form_category !== "gmax") continue; // battle-only alt formes handled via base entry
+      if (p.form_category === "gmax" && !isGmaxUsable(p.showdown_id)) continue;
       let status = "allowed";
       if (p.is_mythical) status = "banned";
       else if (p.is_legendary) status = "restricted";
@@ -817,10 +959,27 @@ async function main() {
 
   for (const p of outPokemon) { delete p._tier; delete p._doublesTier; delete p._natDexTier; }
 
+  // --- Item legality per format ---
+  console.log("Building item legality per format...");
+  const battleItems = outItems.filter((it) => it.is_battle_item === 1);
+  const itemLegality = [];
+  for (const [fid, showdownCode] of formatShowdownCode) {
+    const f = SimDex.formats.get(showdownCode);
+    if (!f || !f.exists) continue;
+    const validator = new TeamValidator(f);
+    for (const it of battleItems) {
+      if (!isItemLegal(validator, it.display_name)) {
+        itemLegality.push({ format_id: fid, item_id: it.id, status: "banned" });
+      }
+    }
+  }
+  console.log(`  ${itemLegality.length} item/format bans found across ${formatShowdownCode.size} formats.`);
+
   // --- LimitlessVGC usage stats (best-effort: a scrape hiccup shouldn't fail the whole build) ---
   let outPokemonUsage = [];
   let outItemUsage = [];
   let outAbilityUsage = [];
+  let outMoveUsage = [];
   let regSlug = null;
   try {
     regSlug = await fetchLimitlessCurrentRegSlug();
@@ -831,10 +990,11 @@ async function main() {
   if (usageFormatFid && regSlug) {
     console.log(`Scraping LimitlessVGC usage stats (format=${regSlug})...`);
     try {
-      const usage = await scrapeUsageStats(usageFormatFid, regSlug, outPokemon, outItems, outAbilities);
+      const usage = await scrapeUsageStats(usageFormatFid, regSlug, outPokemon, outItems, outAbilities, outMoves);
       outPokemonUsage = usage.pokemonUsage;
       outItemUsage = usage.itemUsage;
       outAbilityUsage = usage.abilityUsage;
+      outMoveUsage = usage.moveUsage;
     } catch (err) {
       console.warn(`LimitlessVGC usage scrape failed, continuing without it: ${err.message}`);
     }
@@ -851,9 +1011,11 @@ async function main() {
   await writeFile(path.join(OUT_DIR, "learnsets.json"), JSON.stringify(outLearnsets));
   await writeFile(path.join(OUT_DIR, "formats.json"), JSON.stringify(formats));
   await writeFile(path.join(OUT_DIR, "format_legality.json"), JSON.stringify(formatLegality));
+  await writeFile(path.join(OUT_DIR, "item_legality.json"), JSON.stringify(itemLegality));
   await writeFile(path.join(OUT_DIR, "pokemon_usage.json"), JSON.stringify(outPokemonUsage));
   await writeFile(path.join(OUT_DIR, "item_usage.json"), JSON.stringify(outItemUsage));
   await writeFile(path.join(OUT_DIR, "ability_usage.json"), JSON.stringify(outAbilityUsage));
+  await writeFile(path.join(OUT_DIR, "move_usage.json"), JSON.stringify(outMoveUsage));
 
   console.log("Done. Wrote:");
   console.log(`  pokemon: ${outPokemon.length}`);
@@ -864,9 +1026,11 @@ async function main() {
   console.log(`  learnsets: ${outLearnsets.length}`);
   console.log(`  formats: ${formats.length}`);
   console.log(`  format_legality: ${formatLegality.length}`);
+  console.log(`  item_legality: ${itemLegality.length}`);
   console.log(`  pokemon_usage: ${outPokemonUsage.length}`);
   console.log(`  item_usage: ${outItemUsage.length}`);
   console.log(`  ability_usage: ${outAbilityUsage.length}`);
+  console.log(`  move_usage: ${outMoveUsage.length}`);
 }
 
 // --- static lookup tables (small, stable, not worth a network fetch) ---

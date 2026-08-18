@@ -6,9 +6,12 @@ import {
   getAbilityUsageFor,
   getAllItems,
   getAvailableMovesFor,
+  getBannedItemIdsForFormat,
+  getFormatLegalityMap,
   getFormats,
   getItemUsageFor,
   getLegalPokemonForFormat,
+  getMoveUsageFor,
   getPokemonUsageForFormat,
   parseFormatRuleset,
   type FormatRow,
@@ -39,11 +42,26 @@ import {
   TYPES,
   typeEffectiveness,
 } from "./constants/gameData";
+import { validateTeam, type ValidationIssue } from "./teamValidation";
 import type { AbilityRef, LearnsetMove, PokemonRow } from "./types/pokedex";
 import type { Team, TeamMember, TeamMemberDisplay } from "./types/team";
 
-function TypeBadge({ type }: { type: string }) {
+export function TypeBadge({ type }: { type: string }) {
   return <span className={`type-badge type-${type}`}>{type}</span>;
+}
+
+// Crops a 24x24 cell out of Showdown's own item-icon spritesheet, which is
+// complete and always current -- PokeAPI's per-file sprite repo (used for
+// everything else) is missing icons for ~20% of held items, including some
+// surprisingly common ones. See build-pokedex.mjs's item-building step.
+export function ItemIcon({ x, y, className }: { x: number | null; y: number | null; className?: string }) {
+  if (x === null || y === null) return null;
+  return (
+    <span
+      className={`item-icon-sheet ${className ?? ""}`}
+      style={{ backgroundPosition: `-${x}px -${y}px` }}
+    />
+  );
 }
 
 // Physical/Special/Status category badges: a colored circle chip (matching
@@ -221,8 +239,16 @@ function MiniStatBar({ label, value }: { label: string; value: number }) {
  * themselves now, not a separate section here -- showing a Pokémon's stats
  * twice in two different cards was redundant.
  */
-function TeamOverviewPanel({ members }: { members: TeamMemberDisplay[] }) {
+function TeamOverviewPanel({
+  db, formatId, members,
+}: { db: Database; formatId: number; members: TeamMemberDisplay[] }) {
   if (members.length === 0) return <p className="settings-hint">Add Pokémon to see team coverage.</p>;
+  return <TeamOverviewPanelInner db={db} formatId={formatId} members={members} />;
+}
+
+function TeamOverviewPanelInner({
+  db, formatId, members,
+}: { db: Database; formatId: number; members: TeamMemberDisplay[] }) {
 
   // Immunity is the strongest defensive signal for a type -- a team with an
   // immune wall to Ground is in a different situation than one that's merely
@@ -256,6 +282,46 @@ function TeamOverviewPanel({ members }: { members: TeamMemberDisplay[] }) {
     if (info.weak >= 1) return "weak";
     return "neutral";
   }
+
+  // The 3 biggest un-covered weaknesses (2+ teammates weak, none immune) --
+  // those are worth patching; a single weak teammate or an already-immune
+  // type isn't actionable in the same way.
+  const worstTypes = REAL_TYPES
+    .map((t) => ({ type: t, info: typeInfo.get(t)! }))
+    .filter((x) => x.info.immune === 0 && x.info.weak >= 2)
+    .sort((a, b) => b.info.weak - a.info.weak)
+    .slice(0, 3)
+    .map((x) => x.type);
+  const worstTypesKey = worstTypes.join(",");
+
+  const [suggestions, setSuggestions] = useState<Map<string, PokemonRow[]>>(new Map());
+
+  useEffect(() => {
+    if (!worstTypesKey) { setSuggestions(new Map()); return; }
+    let cancelled = false;
+    (async () => {
+      const [legal, usageRows] = await Promise.all([
+        getLegalPokemonForFormat(db, formatId),
+        getPokemonUsageForFormat(db, formatId),
+      ]);
+      if (cancelled) return;
+      const usage = new Map(usageRows.map((r) => [r.pokemon_id, r.usage_pct]));
+      const onTeam = new Set(members.map((m) => m.pokemon_id));
+      const next = new Map<string, PokemonRow[]>();
+      for (const t of worstTypesKey.split(",")) {
+        next.set(
+          t,
+          legal
+            .filter((p) => !onTeam.has(p.id) && dualTypeEffectiveness(t, p.type1, p.type2) < 1)
+            .sort((a, b) => (usage.get(b.id) ?? -1) - (usage.get(a.id) ?? -1))
+            .slice(0, 5),
+        );
+      }
+      setSuggestions(next);
+    })();
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [db, formatId, worstTypesKey]);
 
   return (
     <div className="overview-panel">
@@ -292,6 +358,32 @@ function TeamOverviewPanel({ members }: { members: TeamMemberDisplay[] }) {
           ))}
         </div>
       </div>
+
+      {worstTypes.length > 0 && (
+        <div className="overview-section">
+          <h5>Coverage suggestions</h5>
+          <p className="settings-hint">Legal Pokémon (by tournament usage, where known) that resist or are immune to your team's biggest weaknesses.</p>
+          {worstTypes.map((t) => (
+            <div key={t} className="suggestion-row">
+              <div className="suggestion-row-label">
+                <TypeBadge type={t} />
+                <span className="weakness-count">{typeInfo.get(t)!.weak} weak</span>
+              </div>
+              <div className="suggestion-chips">
+                {(suggestions.get(t) ?? []).map((p) => (
+                  <div key={p.id} className="suggestion-chip" title={p.display_name}>
+                    {p.sprite_default && <img src={p.sprite_default} alt="" />}
+                    <span>{p.display_name}</span>
+                  </div>
+                ))}
+                {(suggestions.get(t) ?? []).length === 0 && (
+                  <span className="settings-hint">No clean resist found among this format's legal Pokémon.</span>
+                )}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
@@ -374,7 +466,9 @@ function SpeciesPicker({
             </span>
             {p.legality_status === "restricted" && <span className="legality-badge status-restricted">Restricted</span>}
             {p.tier && <span className="tier-tag">{p.tier}</span>}
-            {usage.has(p.id) && <span className="usage-badge" title="Tournament usage">{usage.get(p.id)!.toFixed(1)}%</span>}
+            {usage.size > 0 && (
+              <span className="usage-badge" title="Tournament usage">{(usage.get(p.id) ?? 0).toFixed(1)}%</span>
+            )}
           </li>
         ))}
       </ul>
@@ -382,76 +476,210 @@ function SpeciesPicker({
   );
 }
 
-function SearchDropdown<T extends { id: number; display_name: string }>({
-  value,
+// A modal, searchable picker for large catalogs (items, moves) -- shows a
+// description per option so you know what something does before picking it,
+// instead of committing blind. Same overlay/modal shell as FormatPickerModal
+// and ConfirmModal below, just with a search box up top.
+export function PickerModal<T extends { id: number; display_name: string }>({
+  title,
   options,
-  onSearch,
-  onSelect,
-  placeholder,
+  query,
+  onQueryChange,
+  onPick,
+  onClose,
   renderIcon,
   renderBadge,
+  renderDescription,
 }: {
-  value: T | null;
+  title: string;
   options: T[];
-  onSearch: (q: string) => void;
-  onSelect: (item: T | null) => void;
-  placeholder: string;
+  query: string;
+  onQueryChange: (q: string) => void;
+  onPick: (item: T) => void;
+  onClose: () => void;
   renderIcon?: (item: T) => ReactNode;
   renderBadge?: (item: T) => ReactNode;
+  renderDescription?: (item: T) => string | null | undefined;
 }) {
-  const [open, setOpen] = useState(false);
-  const [openUpward, setOpenUpward] = useState(false);
-  const [text, setText] = useState(value?.display_name ?? "");
-  const containerRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => setText(value?.display_name ?? ""), [value]);
-
-  // On a phone, a field near the bottom of a long scrolled form (common once
-  // the mobile layout stacks everything into one column) would otherwise pop
-  // its ~220px list open mostly below the viewport / behind the keyboard.
-  // Flip it upward instead when there isn't enough room below.
-  function handleOpen() {
-    setOpen(true);
-    const rect = containerRef.current?.getBoundingClientRect();
-    if (rect) setOpenUpward(window.innerHeight - rect.bottom < 240 && rect.top > 240);
-    containerRef.current?.scrollIntoView({ block: "nearest" });
-  }
-
   return (
-    <div className="search-dropdown" ref={containerRef}>
-      <div className="search-dropdown-input-row">
-        {value && renderIcon?.(value)}
-        <input
-          value={text}
-          placeholder={placeholder}
-          onFocus={() => {
-            handleOpen();
-            onSearch(text);
-          }}
-          onChange={(e) => {
-            setText(e.target.value);
-            onSearch(e.target.value);
-            handleOpen();
-          }}
-          onBlur={() => setTimeout(() => setOpen(false), 150)}
-        />
-        {value && (
-          <button className="clear-btn" onMouseDown={(e) => { e.preventDefault(); onSelect(null); setText(""); }}>
-            ×
-          </button>
-        )}
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="modal picker-modal" onClick={(e) => e.stopPropagation()}>
+        <div className="modal-header">
+          <h3>{title}</h3>
+          <button className="ghost-btn" onClick={onClose}>Cancel</button>
+        </div>
+        <div className="picker-modal-search-row">
+          <input
+            autoFocus
+            className="picker-modal-search"
+            placeholder="Search..."
+            value={query}
+            onChange={(e) => onQueryChange(e.target.value)}
+          />
+        </div>
+        <ul className="picker-modal-list">
+          {options.map((opt) => {
+            const desc = renderDescription?.(opt);
+            return (
+              <li key={opt.id} onClick={() => onPick(opt)}>
+                <div className="search-dropdown-option-row">
+                  {renderIcon?.(opt)}
+                  {opt.display_name}
+                  {renderBadge?.(opt)}
+                </div>
+                {desc && <p className="search-dropdown-option-desc">{desc}</p>}
+              </li>
+            );
+          })}
+          {options.length === 0 && <li className="picker-modal-empty">No matches.</li>}
+        </ul>
       </div>
-      {open && options.length > 0 && (
-        <ul className={`search-dropdown-list ${openUpward ? "open-upward" : ""}`}>
-          {options.map((opt) => (
-            <li key={opt.id} onMouseDown={(e) => { e.preventDefault(); onSelect(opt); setOpen(false); }}>
-              {renderIcon?.(opt)}
-              {opt.display_name}
-              {renderBadge?.(opt)}
+    </div>
+  );
+}
+
+// Short, human-written blurbs for the format picker modal -- purely
+// descriptive copy, not competitive-rules data, so hardcoding by code is
+// fine here (unlike legality/banlists, which stay fully auto-detected).
+// Falls back to the ruleset's own auto-detected note, or nothing, for any
+// format not covered (e.g. a future gen's tier codes).
+const FORMAT_DESCRIPTIONS: Record<string, string> = {
+  gen9ubers: "Singles. Nothing banned beyond Sky Drop -- the strongest Pokémon and strategies in the game.",
+  gen9ou: "Singles. The main competitive tier, kept in check by a curated banlist.",
+  gen9uu: "Singles, one tier below OU.",
+  gen9ru: "Singles, one tier below UU.",
+  gen9nu: "Singles, one tier below RU.",
+  gen9pu: "Singles, one tier below NU.",
+  gen9zu: "Singles, the lowest standard tier.",
+  gen9lc: "Singles, Little Cup -- only unevolved Pokémon at level 5.",
+  gen9doublesubers: "Doubles. Nothing banned beyond a handful of moves and abilities.",
+  gen9doublesou: "Doubles. The main competitive doubles tier.",
+  gen9doublesuu: "Doubles, one tier below Doubles OU.",
+  gen9nationaldex: "Singles. Every Pokémon and Mega Evolution ever released, with its own banlist.",
+  gen9nationaldexuu: "Singles, one tier below National Dex.",
+  "official-current": "The official ruleset used by Pokémon Champions and VGC tournaments.",
+  "champions-current": "The official ruleset used by Pokémon Champions tournaments.",
+  "vgc-current": "The official ruleset used by VGC tournaments.",
+};
+
+function formatDescriptionFor(f: FormatRow): string {
+  if (FORMAT_DESCRIPTIONS[f.code]) return FORMAT_DESCRIPTIONS[f.code];
+  return parseFormatRuleset(f.ruleset).note ?? "";
+}
+
+// A modal instead of an inline dropdown -- with room for a description per
+// option, and the same component works both for picking a brand-new team's
+// format up front and for changing an existing team's format later.
+function FormatPickerModal({
+  formats,
+  onPick,
+  onClose,
+}: {
+  formats: FormatRow[];
+  onPick: (formatId: number) => void;
+  onClose: () => void;
+}) {
+  return (
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="modal format-picker-modal" onClick={(e) => e.stopPropagation()}>
+        <div className="modal-header">
+          <h3>Choose a format</h3>
+          <button className="ghost-btn" onClick={onClose}>Cancel</button>
+        </div>
+        <ul className="format-picker-list">
+          {formats.map((f) => (
+            <li key={f.id} onClick={() => onPick(f.id)}>
+              <div className="format-picker-name">
+                <span>{f.name}</span>
+                {f.is_doubles === 1 && <span className="tier-tag">Doubles</span>}
+              </div>
+              {formatDescriptionFor(f) && <p className="format-picker-desc">{formatDescriptionFor(f)}</p>}
             </li>
           ))}
         </ul>
-      )}
+      </div>
+    </div>
+  );
+}
+
+export function TeamValidationModal({
+  issues, formatName, onClose,
+}: { issues: ValidationIssue[]; formatName: string; onClose: () => void }) {
+  const errors = issues.filter((i) => i.severity === "error");
+  const warnings = issues.filter((i) => i.severity === "warning");
+  return (
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="modal validation-modal" onClick={(e) => e.stopPropagation()}>
+        <div className="modal-header">
+          <h3>Validate vs {formatName}</h3>
+          <button className="ghost-btn" onClick={onClose}>Close</button>
+        </div>
+        <div className="validation-modal-body">
+          {issues.length === 0 ? (
+            <p className="validation-ok">✓ No issues found — this team looks legal.</p>
+          ) : (
+            <>
+              {errors.length > 0 && (
+                <div className="validation-group">
+                  <h4>Errors ({errors.length})</h4>
+                  <ul>
+                    {errors.map((issue, idx) => (
+                      <li key={idx} className="validation-issue error">
+                        {issue.slot != null && <span className="validation-slot">Slot {issue.slot}</span>}
+                        {issue.message}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+              {warnings.length > 0 && (
+                <div className="validation-group">
+                  <h4>Warnings ({warnings.length})</h4>
+                  <ul>
+                    {warnings.map((issue, idx) => (
+                      <li key={idx} className="validation-issue warning">
+                        {issue.slot != null && <span className="validation-slot">Slot {issue.slot}</span>}
+                        {issue.message}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+            </>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+export function ConfirmModal({
+  title,
+  message,
+  confirmLabel = "Delete",
+  onConfirm,
+  onCancel,
+}: {
+  title: string;
+  message: string;
+  confirmLabel?: string;
+  onConfirm: () => void;
+  onCancel: () => void;
+}) {
+  return (
+    <div className="modal-overlay" onClick={onCancel}>
+      <div className="modal confirm-modal" onClick={(e) => e.stopPropagation()}>
+        <div className="modal-header">
+          <h3>{title}</h3>
+        </div>
+        <div className="confirm-modal-body">
+          <p>{message}</p>
+          <div className="confirm-modal-actions">
+            <button className="ghost-btn" onClick={onCancel}>Cancel</button>
+            <button className="danger-btn" onClick={onConfirm}>{confirmLabel}</button>
+          </div>
+        </div>
+      </div>
     </div>
   );
 }
@@ -485,19 +713,32 @@ function SetEditor({
   const [abilities, setAbilities] = useState<AbilityRef[]>([]);
   const [availableMoves, setAvailableMoves] = useState<LearnsetMove[]>([]);
   const [moveFilters, setMoveFilters] = useState<string[]>(["", "", "", ""]);
-  const [editingMoveIdx, setEditingMoveIdx] = useState<number | null>(null);
+  const [pickingMoveIdx, setPickingMoveIdx] = useState<number | null>(null);
   const [allItems, setAllItems] = useState<ItemRow[]>([]);
   const [itemQuery, setItemQuery] = useState("");
   const [selectedItem, setSelectedItem] = useState<ItemRow | null>(null);
+  const [pickingItem, setPickingItem] = useState(false);
   const [itemUsage, setItemUsage] = useState<Map<number, number>>(new Map());
   const [abilityUsage, setAbilityUsage] = useState<Map<number, number>>(new Map());
+  const [moveUsage, setMoveUsage] = useState<Map<number, number>>(new Map());
+  const [bannedItemIds, setBannedItemIds] = useState<Set<number>>(new Set());
   const [saveStatus, setSaveStatus] = useState<"saving" | "saved">("saving");
   const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const isFirstRender = useRef(true);
 
   useEffect(() => {
     getAbilitiesFor(db, pokemon.id).then(setAbilities);
-    getAvailableMovesFor(db, pokemon).then(setAvailableMoves);
+    getAvailableMovesFor(db, pokemon).then((moves) => {
+      // The learnset has one row per (move, *method*) -- a move learnable via
+      // both level-up and TM is two rows with the same move id, which is the
+      // right shape for the Pokédex's move-reference table (it wants every
+      // way to learn it) but shows up as a literal duplicate in this picker,
+      // which only cares "can this Pokémon use this move" once. The query's
+      // own ordering already puts the level-up row first per move, so a
+      // first-occurrence dedupe keeps the more useful one.
+      const seenMoveIds = new Set<number>();
+      setAvailableMoves(moves.filter((m) => (seenMoveIds.has(m.id) ? false : (seenMoveIds.add(m.id), true))));
+    });
   }, [db, pokemon]);
 
   // Real tournament usage % for this exact Pokémon in this format -- "what
@@ -509,11 +750,25 @@ function SetEditor({
     if (!team.format_id) {
       setItemUsage(new Map());
       setAbilityUsage(new Map());
+      setMoveUsage(new Map());
       return;
     }
     getItemUsageFor(db, team.format_id, pokemon.id).then((rows) => setItemUsage(new Map(rows.map((r) => [r.item_id, r.usage_pct]))));
     getAbilityUsageFor(db, team.format_id, pokemon.id).then((rows) => setAbilityUsage(new Map(rows.map((r) => [r.ability_id, r.usage_pct]))));
+    getMoveUsageFor(db, team.format_id, pokemon.id).then((rows) => setMoveUsage(new Map(rows.map((r) => [r.move_id, r.usage_pct]))));
   }, [db, team.format_id, pokemon]);
+
+  // Some items exist in the catalog but aren't actually usable in this
+  // format (banned outright, or not part of Gen 9 at all outside e.g.
+  // National Dex) -- checked against Showdown's real validator at pipeline
+  // build time, not guessed from the item's category.
+  useEffect(() => {
+    if (!team.format_id) {
+      setBannedItemIds(new Set());
+      return;
+    }
+    getBannedItemIdsForFormat(db, team.format_id).then(setBannedItemIds);
+  }, [db, team.format_id]);
 
   // Loaded once and filtered client-side below, rather than a fresh query
   // per keystroke -- see getAllItems in db/queries.ts for why.
@@ -529,18 +784,17 @@ function SetEditor({
   const itemOptions = useMemo(() => {
     const q = itemQuery.trim().toLowerCase();
     const usagePct = (it: ItemRow) => itemUsage.get(it.id) ?? -1;
-    if (!q) {
-      // Nothing typed yet: surface the items real teams actually run on this
-      // Pokémon (if we have data for this format) as suggestions on focus,
-      // instead of an empty list until the user starts typing.
-      if (itemUsage.size === 0) return [];
-      return [...allItems].filter((it) => itemUsage.has(it.id)).sort((a, b) => usagePct(b) - usagePct(a)).slice(0, 10);
-    }
-    return [...allItems]
-      .filter((it) => it.display_name.toLowerCase().includes(q))
-      .sort((a, b) => usagePct(b) - usagePct(a))
-      .slice(0, 30);
-  }, [allItems, itemQuery, itemUsage]);
+    const legalItems = allItems.filter((it) => !bannedItemIds.has(it.id));
+    // Trending items (if we have usage data for this Pokémon+format) sort to
+    // the top either way; browsing on focus (no query yet) still shows the
+    // rest of the catalog below them, rather than looking like trending items
+    // are the *only* options. No length cap: the legal battle-item catalog
+    // (~350 items) is small enough to render in full in a scrollable list --
+    // an earlier cap here made items look "missing" until you typed enough
+    // to narrow the match count under the cap.
+    const pool = q ? legalItems.filter((it) => it.display_name.toLowerCase().includes(q)) : legalItems;
+    return [...pool].sort((a, b) => usagePct(b) - usagePct(a));
+  }, [allItems, itemQuery, itemUsage, bannedItemIds]);
 
   const evTotal = STATS.reduce((sum, s) => sum + (member as unknown as Record<string, number>)[`ev_${s.key}`], 0);
 
@@ -678,8 +932,8 @@ function currentDraft(): Omit<TeamMember, "id"> {
               >
                 <div className="ability-card-header">
                   <strong>{a.display_name}</strong>
-                  {abilityUsage.has(a.id) && (
-                    <span className="usage-badge" title="Tournament usage">{abilityUsage.get(a.id)!.toFixed(0)}%</span>
+                  {abilityUsage.size > 0 && (
+                    <span className="usage-badge" title="Tournament usage">{(abilityUsage.get(a.id) ?? 0).toFixed(1)}%</span>
                   )}
                   {a.is_hidden ? <span className="hidden-tag">Hidden</span> : null}
                 </div>
@@ -691,18 +945,42 @@ function currentDraft(): Omit<TeamMember, "id"> {
 
         <label>
           Item
-          <SearchDropdown
-            value={selectedItem}
-            options={itemOptions}
-            placeholder="Search items..."
-            onSearch={setItemQuery}
-            onSelect={setSelectedItem}
-            renderIcon={(it) => it.sprite ? <img src={it.sprite} alt="" className="dropdown-icon" loading="lazy" /> : null}
-            renderBadge={(it) => itemUsage.has(it.id) ? (
-              <span className="usage-badge" title="Tournament usage">{itemUsage.get(it.id)!.toFixed(0)}%</span>
-            ) : null}
-          />
+          <div className="item-select-row">
+            <button
+              type="button"
+              className="ghost-btn item-select-btn"
+              onClick={() => { setItemQuery(""); setPickingItem(true); }}
+            >
+              {selectedItem ? (
+                <>
+                  <ItemIcon x={selectedItem.sprite_x} y={selectedItem.sprite_y} className="dropdown-icon" />
+                  {selectedItem.display_name}
+                </>
+              ) : (
+                "Select item..."
+              )}
+            </button>
+            {selectedItem && (
+              <button type="button" className="clear-btn" onClick={() => setSelectedItem(null)}>×</button>
+            )}
+          </div>
         </label>
+
+        {pickingItem && (
+          <PickerModal
+            title="Choose an item"
+            options={itemOptions}
+            query={itemQuery}
+            onQueryChange={setItemQuery}
+            onPick={(it) => { setSelectedItem(it); setPickingItem(false); }}
+            onClose={() => setPickingItem(false)}
+            renderIcon={(it) => <ItemIcon x={it.sprite_x} y={it.sprite_y} className="dropdown-icon" />}
+            renderBadge={(it) => itemUsage.size > 0 ? (
+              <span className="usage-badge" title="Tournament usage">{(itemUsage.get(it.id) ?? 0).toFixed(1)}%</span>
+            ) : null}
+            renderDescription={(it) => it.short_effect}
+          />
+        )}
 
         <label>
           Nature
@@ -744,30 +1022,26 @@ function currentDraft(): Omit<TeamMember, "id"> {
       <h4>Moves</h4>
       <div className="move-cards">
         {[0, 1, 2, 3].map((idx) => {
-          const q = moveFilters[idx].toLowerCase();
-          const matches = q ? availableMoves.filter((m) => m.display_name.toLowerCase().includes(q)) : availableMoves;
           const currentMove = availableMoves.find((m) => m.id === moveIds[idx]);
-          const isEditing = editingMoveIdx === idx || !currentMove;
 
-          if (isEditing) {
+          if (!currentMove) {
             return (
-              <div key={idx} className="move-card move-card-editing">
-                <SearchDropdown
-                  value={currentMove ? { id: currentMove.id, display_name: currentMove.display_name } : null}
-                  options={matches.slice(0, 30).map((m) => ({ id: m.id, display_name: m.display_name }))}
-                  placeholder={`Search move ${idx + 1}...`}
-                  onSearch={(text) => setMoveFilters((f) => f.map((v, i) => (i === idx ? text : v)))}
-                  onSelect={(opt) => {
-                    setMoveSlot(idx, opt?.id ?? null);
-                    setEditingMoveIdx(null);
-                  }}
-                />
+              <div
+                key={idx}
+                className="move-card move-card-empty"
+                onClick={() => { setMoveFilters((f) => f.map((v, i) => (i === idx ? "" : v))); setPickingMoveIdx(idx); }}
+              >
+                <span>+ Add move</span>
               </div>
             );
           }
 
           return (
-            <div key={idx} className="move-card" onClick={() => setEditingMoveIdx(idx)}>
+            <div
+              key={idx}
+              className="move-card"
+              onClick={() => { setMoveFilters((f) => f.map((v, i) => (i === idx ? "" : v))); setPickingMoveIdx(idx); }}
+            >
               <button
                 className="slot-clear move-card-clear"
                 onClick={(e) => { e.stopPropagation(); setMoveSlot(idx, null); }}
@@ -776,6 +1050,9 @@ function currentDraft(): Omit<TeamMember, "id"> {
               </button>
               <div className="move-card-header">
                 <strong>{currentMove.display_name}</strong>
+                {moveUsage.size > 0 && (
+                  <span className="usage-badge" title="Tournament usage">{(moveUsage.get(currentMove.id) ?? 0).toFixed(1)}%</span>
+                )}
                 <TypeBadge type={currentMove.type} />
               </div>
               <div className="move-card-stats">
@@ -791,6 +1068,27 @@ function currentDraft(): Omit<TeamMember, "id"> {
           );
         })}
       </div>
+
+      {pickingMoveIdx !== null && (() => {
+        const q = moveFilters[pickingMoveIdx].toLowerCase();
+        const matches = q ? availableMoves.filter((m) => m.display_name.toLowerCase().includes(q)) : availableMoves;
+        const sortedMatches = [...matches].sort((a, b) => (moveUsage.get(b.id) ?? -1) - (moveUsage.get(a.id) ?? -1));
+        return (
+          <PickerModal
+            title={`Choose move ${pickingMoveIdx + 1}`}
+            options={sortedMatches}
+            query={moveFilters[pickingMoveIdx]}
+            onQueryChange={(text) => setMoveFilters((f) => f.map((v, i) => (i === pickingMoveIdx ? text : v)))}
+            onPick={(m) => { setMoveSlot(pickingMoveIdx, m.id); setPickingMoveIdx(null); }}
+            onClose={() => setPickingMoveIdx(null)}
+            renderIcon={(m) => <TypeBadge type={m.type} />}
+            renderBadge={(m) => moveUsage.size > 0 ? (
+              <span className="usage-badge" title="Tournament usage">{(moveUsage.get(m.id) ?? 0).toFixed(1)}%</span>
+            ) : null}
+            renderDescription={(m) => m.short_effect}
+          />
+        );
+      })()}
 
       <h4>EVs ({evTotal}/{MAX_EV_TOTAL})</h4>
       <div className="ev-iv-sliders">
@@ -877,7 +1175,7 @@ function TeamSlotCard({
         <div className="team-slot-item">
           {member.item_name ? (
             <>
-              {member.item_sprite && <img src={member.item_sprite} alt="" className="team-slot-item-icon" />}
+              <ItemIcon x={member.item_sprite_x} y={member.item_sprite_y} className="team-slot-item-icon" />
               {member.item_name}
             </>
           ) : (
@@ -998,6 +1296,8 @@ function TeamEditor({ db, teamId, onBack }: { db: Database; teamId: number; onBa
   const [pickingSpeciesForSlot, setPickingSpeciesForSlot] = useState<number | null>(null);
   const [chosenSpecies, setChosenSpecies] = useState<PokemonRow | null>(null);
   const [ioMode, setIoMode] = useState<"import" | "export" | null>(null);
+  const [pickingFormat, setPickingFormat] = useState(false);
+  const [validationIssues, setValidationIssues] = useState<ValidationIssue[] | null>(null);
 
   async function reload() {
     const [teamRow, memberRows] = await Promise.all([getTeam(db, teamId), getTeamMembers(db, teamId)]);
@@ -1017,12 +1317,22 @@ function TeamEditor({ db, teamId, onBack }: { db: Database; teamId: number; onBa
 
   async function handleFormatChange(formatId: number) {
     await updateTeamMeta(db, teamId, { format_id: formatId });
+    setPickingFormat(false);
     reload();
   }
 
   async function handleClearSlot(slot: number) {
     await clearTeamSlot(db, teamId, slot);
     reload();
+  }
+
+  async function handleValidate() {
+    if (!currentFormat) return;
+    const [legalityMap, bannedItemIds] = await Promise.all([
+      getFormatLegalityMap(db, currentFormat.id, members.map((m) => m.pokemon_id)),
+      getBannedItemIdsForFormat(db, currentFormat.id),
+    ]);
+    setValidationIssues(validateTeam(members, currentFormat, parseFormatRuleset(currentFormat.ruleset), legalityMap, bannedItemIds));
   }
 
   const editingMember = editingSlot !== null ? membersBySlot.get(editingSlot) ?? null : null;
@@ -1040,19 +1350,24 @@ function TeamEditor({ db, teamId, onBack }: { db: Database; teamId: number; onBa
           onChange={(e) => setTeam({ ...team, name: e.target.value })}
           onBlur={() => updateTeamMeta(db, teamId, { name: team.name })}
         />
-        <select
-          value={team.format_id ?? ""}
-          onChange={(e) => handleFormatChange(Number(e.target.value))}
-        >
-          <option value="">Select format...</option>
-          {formats.map((f) => <option key={f.id} value={f.id}>{f.name}</option>)}
-        </select>
+        <button className="ghost-btn format-select-btn" onClick={() => setPickingFormat(true)}>
+          {currentFormat ? currentFormat.name : "Select format..."}
+        </button>
         {team.format_id && !teraAllowed && <span className="format-note">Tera disabled in this format</span>}
         <div className="team-editor-header-actions">
+          <button className="ghost-btn" onClick={handleValidate} disabled={!currentFormat}>Validate</button>
           <button className="ghost-btn" onClick={() => setIoMode("export")}>Export</button>
           <button className="ghost-btn" onClick={() => setIoMode("import")}>Import</button>
         </div>
       </div>
+
+      {pickingFormat && (
+        <FormatPickerModal formats={formats} onPick={handleFormatChange} onClose={() => setPickingFormat(false)} />
+      )}
+
+      {validationIssues && currentFormat && (
+        <TeamValidationModal issues={validationIssues} formatName={currentFormat.name} onClose={() => setValidationIssues(null)} />
+      )}
 
       {ioMode && (
         <ShowdownImportExportPanel
@@ -1088,7 +1403,7 @@ function TeamEditor({ db, teamId, onBack }: { db: Database; teamId: number; onBa
             ))}
           </div>
 
-          <TeamOverviewPanel members={members} />
+          <TeamOverviewPanel db={db} formatId={team.format_id} members={members} />
 
           {pickingSpeciesForSlot !== null && (
             <SpeciesPicker
@@ -1196,6 +1511,9 @@ function SetEditorLoader({
 function TeamList({ db, onOpen }: { db: Database; onOpen: (id: number) => void }) {
   const [teams, setTeams] = useState<(Team & { format_name: string | null })[]>([]);
   const [rosters, setRosters] = useState<Map<number, (TeamRosterEntry | null)[]>>(new Map());
+  const [formats, setFormats] = useState<FormatRow[]>([]);
+  const [pickingFormat, setPickingFormat] = useState(false);
+  const [deletingId, setDeletingId] = useState<number | null>(null);
 
   function reload() {
     listTeams(db).then(setTeams);
@@ -1210,17 +1528,27 @@ function TeamList({ db, onOpen }: { db: Database; onOpen: (id: number) => void }
     });
   }
 
-  useEffect(reload, [db]);
+  useEffect(() => {
+    reload();
+    getFormats(db).then(setFormats);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [db]);
 
-  async function handleCreateTeam() {
-    const id = await createTeam(db, "New Team", null);
+  async function handleCreateTeam(formatId: number) {
+    setPickingFormat(false);
+    const id = await createTeam(db, "New Team", formatId);
     onOpen(id);
   }
 
-  async function handleDelete(id: number, e: React.MouseEvent) {
+  function handleDeleteClick(id: number, e: React.MouseEvent) {
     e.stopPropagation();
-    if (!confirm("Delete this team?")) return;
-    await deleteTeam(db, id);
+    setDeletingId(id);
+  }
+
+  async function handleConfirmDelete() {
+    if (deletingId === null) return;
+    await deleteTeam(db, deletingId);
+    setDeletingId(null);
     reload();
   }
 
@@ -1228,12 +1556,12 @@ function TeamList({ db, onOpen }: { db: Database; onOpen: (id: number) => void }
     <div className="team-list-page">
       <h2>Teams</h2>
       <div className="team-cards-grid">
-        <div className="team-slot empty create-team-tile" onClick={handleCreateTeam}>
+        <div className="team-slot empty create-team-tile" onClick={() => setPickingFormat(true)}>
           <span>+ Create Team</span>
         </div>
         {teams.map((t) => (
           <div key={t.id} className="team-card" onClick={() => onOpen(t.id)}>
-            <button className="slot-clear team-card-delete" onClick={(e) => handleDelete(t.id, e)}>×</button>
+            <button className="slot-clear team-card-delete" onClick={(e) => handleDeleteClick(t.id, e)}>×</button>
             <div className="team-card-header">
               <strong>{t.name}</strong>
               <span className="team-list-format">{t.format_name ?? "no format set"}</span>
@@ -1250,12 +1578,33 @@ function TeamList({ db, onOpen }: { db: Database; onOpen: (id: number) => void }
           </div>
         ))}
       </div>
+
+      {pickingFormat && (
+        <FormatPickerModal formats={formats} onPick={handleCreateTeam} onClose={() => setPickingFormat(false)} />
+      )}
+
+      {deletingId !== null && (
+        <ConfirmModal
+          title="Delete team?"
+          message={`Delete "${teams.find((t) => t.id === deletingId)?.name ?? "this team"}"? This can't be undone.`}
+          confirmLabel="Delete"
+          onConfirm={handleConfirmDelete}
+          onCancel={() => setDeletingId(null)}
+        />
+      )}
     </div>
   );
 }
 
-export default function TeamBuilder({ db }: { db: Database }) {
+export default function TeamBuilder({
+  db, initialTeamId, initialNonce,
+}: { db: Database; initialTeamId?: number | null; initialNonce?: number | null }) {
   const [openTeamId, setOpenTeamId] = useState<number | null>(null);
+
+  useEffect(() => {
+    if (initialTeamId != null) setOpenTeamId(initialTeamId);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initialNonce]);
 
   return openTeamId === null ? (
     <TeamList db={db} onOpen={setOpenTeamId} />

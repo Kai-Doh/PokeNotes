@@ -3,6 +3,7 @@ import type {
   AbilityRef,
   FormatLegalityEntry,
   LearnsetMove,
+  MoveRow,
   PokemonRow,
 } from "../types/pokedex";
 
@@ -39,7 +40,8 @@ export interface ItemRow {
   category: string | null;
   is_battle_item: number;
   short_effect: string | null;
-  sprite: string | null;
+  sprite_x: number | null;
+  sprite_y: number | null;
 }
 
 // Battle-only forms (mega/gmax/and one-off alt formes like Necrozma-Dusk-Mane
@@ -92,6 +94,27 @@ export function getFormatLegalityFor(db: Database, pokemonId: number): Promise<F
      FROM format_legality fl JOIN formats f ON f.id = fl.format_id
      WHERE fl.pokemon_id = ? ORDER BY f.source ASC, f.id ASC`,
     [pokemonId],
+  );
+}
+
+/** Bulk species-legality lookup for a whole team at once, instead of one query per member. */
+export async function getFormatLegalityMap(
+  db: Database, formatId: number, pokemonIds: number[],
+): Promise<Map<number, { status: string; tier: string | null }>> {
+  if (pokemonIds.length === 0) return new Map();
+  const rows = await db.select<{ pokemon_id: number; status: string; tier: string | null }[]>(
+    `SELECT pokemon_id, status, tier FROM format_legality
+     WHERE format_id = ? AND pokemon_id IN (${pokemonIds.map(() => "?").join(",")})`,
+    [formatId, ...pokemonIds],
+  );
+  return new Map(rows.map((r) => [r.pokemon_id, { status: r.status, tier: r.tier }]));
+}
+
+/** Every move that can actually deal damage (excludes status moves), for the damage calculator's move picker. */
+export function listDamagingMoves(db: Database): Promise<MoveRow[]> {
+  return db.select<MoveRow[]>(
+    `SELECT id, name, display_name, type, category, power, accuracy, pp, short_effect FROM moves
+     WHERE category != 'status' AND power IS NOT NULL ORDER BY display_name ASC`,
   );
 }
 
@@ -171,6 +194,18 @@ export function getAbilityUsageFor(db: Database, formatId: number, pokemonId: nu
   );
 }
 
+export interface MoveUsageRow {
+  move_id: number;
+  usage_pct: number;
+}
+
+export function getMoveUsageFor(db: Database, formatId: number, pokemonId: number): Promise<MoveUsageRow[]> {
+  return db.select<MoveUsageRow[]>(
+    "SELECT move_id, usage_pct FROM move_usage WHERE format_id = ? AND pokemon_id = ?",
+    [formatId, pokemonId],
+  );
+}
+
 // Loaded once and filtered client-side (same pattern as moves), rather than
 // a fresh query per keystroke -- avoids a race where a fast keystroke's
 // query resolves after a later one and clobbers it with stale results.
@@ -179,6 +214,17 @@ export function getAbilityUsageFor(db: Database, formatId: number, pokemonId: nu
 // key items, TMs, mail, vitamins, and other things nobody holds in battle.
 export function getAllItems(db: Database): Promise<ItemRow[]> {
   return db.select<ItemRow[]>(
-    "SELECT id, name, display_name, category, is_battle_item, short_effect, sprite FROM items WHERE is_battle_item = 1 ORDER BY display_name ASC",
+    "SELECT id, name, display_name, category, is_battle_item, short_effect, sprite_x, sprite_y FROM items WHERE is_battle_item = 1 ORDER BY display_name ASC",
   );
+}
+
+// item_legality only stores the exceptions (banned items per format) --
+// items with no row for a format are legal there. Returns just the banned
+// item ids so the picker can filter them out of the otherwise-global catalog.
+export async function getBannedItemIdsForFormat(db: Database, formatId: number): Promise<Set<number>> {
+  const rows = await db.select<{ item_id: number }[]>(
+    "SELECT item_id FROM item_legality WHERE format_id = ? AND status = 'banned'",
+    [formatId],
+  );
+  return new Set(rows.map((r) => r.item_id));
 }

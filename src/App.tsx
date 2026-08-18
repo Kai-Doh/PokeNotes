@@ -4,12 +4,139 @@ import { getVersion } from "@tauri-apps/api/app";
 import { check, type Update } from "@tauri-apps/plugin-updater";
 import { relaunch } from "@tauri-apps/plugin-process";
 import { platform } from "@tauri-apps/plugin-os";
+import { save, open } from "@tauri-apps/plugin-dialog";
 import { getDb } from "./db/client";
+import { backupDatabase, restoreDatabase } from "./db/backup";
 import { getPokedexUpdatedAt, refreshPokedexData, seedDatabaseIfNeeded, type SeedProgress } from "./db/pokedex-data";
 import { getAbilitiesFor, getBattleFormVariants, getFormatLegalityFor, getLearnsetFor, listPokemon } from "./db/queries";
+import { listBattles } from "./db/battleQueries";
+import { listTeams } from "./db/teamQueries";
+import { normalizeKey } from "./showdownFormat";
 import type { AbilityRef, FormatLegalityEntry, LearnsetMove, PokemonRow } from "./types/pokedex";
+import type { BattleListEntry } from "./types/battle";
+import type { Team } from "./types/team";
 import TeamBuilder from "./TeamBuilder";
+import BattleLog from "./BattleLog";
+import DamageCalc from "./DamageCalc";
 import "./App.css";
+
+type DeepLink = { kind: "pokemon" | "team" | "battle"; id: number; nonce: number };
+
+interface GlobalSearchResult {
+  kind: "pokemon" | "team" | "battle";
+  id: number;
+  label: string;
+  sub: string;
+  sprite: string | null;
+}
+
+function GlobalSearchBar({ db, onSelect }: { db: Database; onSelect: (kind: DeepLink["kind"], id: number) => void }) {
+  const [query, setQuery] = useState("");
+  const [open, setOpen] = useState(false);
+  const [allPokemon, setAllPokemon] = useState<PokemonRow[]>([]);
+  const [teams, setTeams] = useState<(Team & { format_name: string | null })[]>([]);
+  const [battles, setBattles] = useState<BattleListEntry[]>([]);
+
+  async function refresh() {
+    const [p, t, b] = await Promise.all([listPokemon(db), listTeams(db), listBattles(db)]);
+    setAllPokemon(p);
+    setTeams(t);
+    setBattles(b);
+  }
+
+  useEffect(() => {
+    refresh();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [db]);
+
+  const results = useMemo((): GlobalSearchResult[] => {
+    const q = normalizeKey(query);
+    if (!q) return [];
+    const out: GlobalSearchResult[] = [];
+    let n = 0;
+    for (const p of allPokemon) {
+      if (n >= 5) break;
+      if (normalizeKey(p.display_name).includes(q) || (p.form_label && normalizeKey(p.form_label).includes(q))) {
+        out.push({
+          kind: "pokemon", id: p.id,
+          label: p.display_name + (p.form_label ? ` (${p.form_label})` : ""),
+          sub: `#${p.national_dex_number}`, sprite: p.sprite_default,
+        });
+        n++;
+      }
+    }
+    n = 0;
+    for (const t of teams) {
+      if (n >= 5) break;
+      if (normalizeKey(t.name).includes(q)) {
+        out.push({ kind: "team", id: t.id, label: t.name, sub: t.format_name ?? "No format set", sprite: null });
+        n++;
+      }
+    }
+    n = 0;
+    for (const b of battles) {
+      if (n >= 5) break;
+      if (normalizeKey(`${b.opponent_name ?? ""} ${b.event_name ?? ""}`).includes(q)) {
+        out.push({
+          kind: "battle", id: b.id, label: `vs ${b.opponent_name ?? "Unknown"}`,
+          sub: b.event_name ?? b.format_label ?? "", sprite: null,
+        });
+        n++;
+      }
+    }
+    return out;
+  }, [query, allPokemon, teams, battles]);
+
+  function select(r: GlobalSearchResult) {
+    setOpen(false);
+    setQuery("");
+    onSelect(r.kind, r.id);
+  }
+
+  const groups: { kind: DeepLink["kind"]; label: string }[] = [
+    { kind: "pokemon", label: "Pokédex" },
+    { kind: "team", label: "Teams" },
+    { kind: "battle", label: "Battle Log" },
+  ];
+
+  return (
+    <div className="global-search">
+      <input
+        className="global-search-input"
+        placeholder="Search Pokémon, teams, battles..."
+        value={query}
+        onChange={(e) => { setQuery(e.target.value); setOpen(true); }}
+        onFocus={() => { setOpen(true); refresh(); }}
+        onBlur={() => setTimeout(() => setOpen(false), 150)}
+        onKeyDown={(e) => e.key === "Escape" && setOpen(false)}
+      />
+      {open && query.trim() && (
+        <div className="global-search-dropdown">
+          {results.length === 0 ? (
+            <p className="global-search-empty">No matches.</p>
+          ) : (
+            groups.map((g) => {
+              const items = results.filter((r) => r.kind === g.kind);
+              if (items.length === 0) return null;
+              return (
+                <div key={g.kind} className="global-search-group">
+                  <span className="global-search-group-label">{g.label}</span>
+                  {items.map((r) => (
+                    <div key={`${r.kind}-${r.id}`} className="global-search-item" onMouseDown={() => select(r)}>
+                      {r.sprite && <img src={r.sprite} alt="" />}
+                      <span className="global-search-item-label">{r.label}</span>
+                      {r.sub && <span className="global-search-item-sub">{r.sub}</span>}
+                    </div>
+                  ))}
+                </div>
+              );
+            })
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
 
 function useDatabase() {
   const [db, setDb] = useState<Database | null>(null);
@@ -44,6 +171,16 @@ function useDatabase() {
 
 function TypeBadge({ type }: { type: string }) {
   return <span className={`type-badge type-${type}`}>{type}</span>;
+}
+
+function PokeBallIcon({ className }: { className?: string }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+      <circle cx="12" cy="12" r="10" fill="currentColor" fillOpacity="0.15" stroke="currentColor" strokeWidth="1.6" />
+      <path d="M2 12h6.2M15.8 12H22" stroke="currentColor" strokeWidth="1.6" />
+      <circle cx="12" cy="12" r="2.6" fill="currentColor" fillOpacity="0.2" stroke="currentColor" strokeWidth="1.6" />
+    </svg>
+  );
 }
 
 function StatBar({ label, value }: { label: string; value: number }) {
@@ -192,7 +329,9 @@ function PokemonDetail({ db, pokemon }: { db: Database; pokemon: PokemonRow }) {
   );
 }
 
-function PokedexBrowser({ db }: { db: Database }) {
+function PokedexBrowser({
+  db, initialPokemonId, initialNonce,
+}: { db: Database; initialPokemonId?: number | null; initialNonce?: number | null }) {
   const [all, setAll] = useState<PokemonRow[]>([]);
   const [search, setSearch] = useState("");
   const [selected, setSelected] = useState<PokemonRow | null>(null);
@@ -207,6 +346,16 @@ function PokedexBrowser({ db }: { db: Database }) {
       setSelected(rows[0] ?? null);
     });
   }, [db]);
+
+  // Jump to a specific species when the global search bar sends one --
+  // keyed on the nonce (not the id) so re-picking the same result twice
+  // still re-triggers the jump.
+  useEffect(() => {
+    if (initialPokemonId == null || all.length === 0) return;
+    const p = all.find((x) => x.id === initialPokemonId);
+    if (p) { setSelected(p); setMobileDetailOpen(true); }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initialNonce, all]);
 
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -361,6 +510,8 @@ function SettingsView({ db }: { db: Database }) {
   const [refreshing, setRefreshing] = useState(false);
   const [refreshProgress, setRefreshProgress] = useState<SeedProgress | null>(null);
   const [message, setMessage] = useState<string | null>(null);
+  const [backupBusy, setBackupBusy] = useState(false);
+  const [backupMessage, setBackupMessage] = useState<string | null>(null);
 
   useEffect(() => {
     getPokedexUpdatedAt(db).then(setUpdatedAt);
@@ -382,6 +533,41 @@ function SettingsView({ db }: { db: Database }) {
   }
 
   const pct = refreshProgress ? Math.round((refreshProgress.done / Math.max(1, refreshProgress.total)) * 100) : 0;
+
+  async function handleBackup() {
+    setBackupBusy(true);
+    setBackupMessage(null);
+    try {
+      const path = await save({
+        defaultPath: `pokenotes-backup-${new Date().toISOString().slice(0, 10)}.db`,
+        filters: [{ name: "PokeNotes Backup", extensions: ["db"] }],
+      });
+      if (!path) return;
+      await backupDatabase(db, path);
+      setBackupMessage("Backup saved.");
+    } catch (e) {
+      setBackupMessage(`Backup failed: ${String(e)}`);
+    } finally {
+      setBackupBusy(false);
+    }
+  }
+
+  async function handleRestore() {
+    setBackupBusy(true);
+    setBackupMessage(null);
+    try {
+      const path = await open({
+        multiple: false,
+        filters: [{ name: "PokeNotes Backup", extensions: ["db"] }],
+      });
+      if (!path || Array.isArray(path)) return;
+      await restoreDatabase(db, path);
+      await relaunch();
+    } catch (e) {
+      setBackupMessage(`Restore failed: ${String(e)}`);
+      setBackupBusy(false);
+    }
+  }
 
   return (
     <div className="settings">
@@ -409,6 +595,18 @@ function SettingsView({ db }: { db: Database }) {
           </div>
         )}
         {message && <p className="settings-message">{message}</p>}
+      </section>
+
+      <section>
+        <h3>Backup &amp; Restore</h3>
+        <p className="settings-hint">
+          Your teams and battle log live only on this device. Back them up to a file you control, and
+          restore from one later (including on a different install) — this only touches your own data,
+          not the bundled Pokédex.
+        </p>
+        <button onClick={handleBackup} disabled={backupBusy}>Save Backup...</button>
+        <button className="ghost-btn" onClick={handleRestore} disabled={backupBusy}>Restore from Backup...</button>
+        {backupMessage && <p className="settings-message">{backupMessage}</p>}
       </section>
 
       <AppUpdateSection />
@@ -440,6 +638,30 @@ const NAV_ITEMS = [
       </svg>
     ),
   },
+  {
+    id: "battles" as const,
+    label: "Battle Log",
+    icon: (
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
+        <path d="M4 19h16" />
+        <path d="M7 19v-6l3-3 3 3 4-6" />
+        <circle cx="7" cy="13" r="1.4" />
+        <circle cx="13" cy="13" r="1.4" />
+        <circle cx="17" cy="7" r="1.4" />
+      </svg>
+    ),
+  },
+  {
+    id: "calc" as const,
+    label: "Damage Calc",
+    icon: (
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
+        <rect x="5" y="3" width="14" height="18" rx="2" />
+        <path d="M8 7h8" />
+        <path d="M8 12h1M11.5 12h1M15 12h1M8 16h1M11.5 16h1M15 16h1" strokeLinecap="round" />
+      </svg>
+    ),
+  },
 ];
 
 const SETTINGS_NAV_ITEM = {
@@ -455,8 +677,14 @@ const SETTINGS_NAV_ITEM = {
 
 function App() {
   const { db, progress, error } = useDatabase();
-  const [view, setView] = useState<"pokedex" | "teams" | "settings">("pokedex");
+  const [view, setView] = useState<"pokedex" | "teams" | "battles" | "calc" | "settings">("pokedex");
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [deepLink, setDeepLink] = useState<DeepLink | null>(null);
+
+  function handleSearchSelect(kind: DeepLink["kind"], id: number) {
+    setDeepLink({ kind, id, nonce: Date.now() });
+    setView(kind === "pokemon" ? "pokedex" : kind === "team" ? "teams" : "battles");
+  }
 
   useEffect(() => {
     if (!sidebarOpen) return;
@@ -495,7 +723,22 @@ function App() {
         >
           <span /><span /><span />
         </button>
-        <span className="brand">PokeNotes</span>
+        <span className="lens-icon" aria-hidden="true">
+          <span className="lens-icon-inner" />
+        </span>
+        <div className="pokedex-lights" aria-hidden="true">
+          <span className="light light-red" />
+          <span className="light light-yellow" />
+          <span className="light light-green" />
+        </div>
+        <GlobalSearchBar db={db} onSelect={handleSearchSelect} />
+        <div className="brand-block">
+          <div className="brand-title-row">
+            <span className="brand-title">PokeNotes</span>
+            <PokeBallIcon className="brand-icon" />
+          </div>
+          <span className="brand-subtitle">Team builder &amp; battle notes</span>
+        </div>
       </nav>
 
       <div className={`sidebar-backdrop ${sidebarOpen ? "open" : ""}`} onClick={() => setSidebarOpen(false)} />
@@ -527,8 +770,28 @@ function App() {
       </aside>
 
       <div className="app-body">
-        {view === "pokedex" && <PokedexBrowser db={db} />}
-        {view === "teams" && <TeamBuilder db={db} />}
+        {view === "pokedex" && (
+          <PokedexBrowser
+            db={db}
+            initialPokemonId={deepLink?.kind === "pokemon" ? deepLink.id : null}
+            initialNonce={deepLink?.kind === "pokemon" ? deepLink.nonce : null}
+          />
+        )}
+        {view === "teams" && (
+          <TeamBuilder
+            db={db}
+            initialTeamId={deepLink?.kind === "team" ? deepLink.id : null}
+            initialNonce={deepLink?.kind === "team" ? deepLink.nonce : null}
+          />
+        )}
+        {view === "battles" && (
+          <BattleLog
+            db={db}
+            initialBattleId={deepLink?.kind === "battle" ? deepLink.id : null}
+            initialNonce={deepLink?.kind === "battle" ? deepLink.nonce : null}
+          />
+        )}
+        {view === "calc" && <DamageCalc db={db} />}
         {view === "settings" && <SettingsView db={db} />}
       </div>
     </main>

@@ -20,7 +20,7 @@ export function getTeamMembers(db: Database, teamId: number): Promise<TeamMember
             p.showdown_name as pokemon_showdown_name,
             p.type1, p.type2,
             p.base_hp, p.base_atk, p.base_def, p.base_spa, p.base_spd, p.base_spe,
-            it.display_name as item_name, it.sprite as item_sprite,
+            it.display_name as item_name, it.sprite_x as item_sprite_x, it.sprite_y as item_sprite_y,
             ab.display_name as ability_name,
             m1.display_name as move1_name, m2.display_name as move2_name,
             m3.display_name as move3_name, m4.display_name as move4_name,
