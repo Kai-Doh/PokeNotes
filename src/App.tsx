@@ -3,6 +3,7 @@ import type Database from "@tauri-apps/plugin-sql";
 import { getVersion } from "@tauri-apps/api/app";
 import { check, type Update } from "@tauri-apps/plugin-updater";
 import { relaunch } from "@tauri-apps/plugin-process";
+import { platform } from "@tauri-apps/plugin-os";
 import { getDb } from "./db/client";
 import { getPokedexUpdatedAt, refreshPokedexData, seedDatabaseIfNeeded, type SeedProgress } from "./db/pokedex-data";
 import { getAbilitiesFor, getBattleFormVariants, getFormatLegalityFor, getLearnsetFor, listPokemon } from "./db/queries";
@@ -158,32 +159,34 @@ function PokemonDetail({ db, pokemon }: { db: Database; pokemon: PokemonRow }) {
           value={moveFilter}
           onChange={(e) => setMoveFilter(e.target.value)}
         />
-        <table className="move-table">
-          <thead>
-            <tr>
-              <th>Name</th>
-              <th>Type</th>
-              <th>Cat</th>
-              <th>Pow</th>
-              <th>Acc</th>
-              <th>PP</th>
-              <th>Method</th>
-            </tr>
-          </thead>
-          <tbody>
-            {filteredMoves.map((m) => (
-              <tr key={`${m.id}-${m.method}`}>
-                <td>{m.display_name}</td>
-                <td><TypeBadge type={m.type} /></td>
-                <td>{m.category}</td>
-                <td>{m.power ?? "—"}</td>
-                <td>{m.accuracy ?? "—"}</td>
-                <td>{m.pp ?? "—"}</td>
-                <td>{m.method === "level-up" ? `Lv ${m.level}` : m.method}</td>
+        <div className="move-table-scroll">
+          <table className="move-table">
+            <thead>
+              <tr>
+                <th>Name</th>
+                <th>Type</th>
+                <th>Cat</th>
+                <th>Pow</th>
+                <th>Acc</th>
+                <th>PP</th>
+                <th>Method</th>
               </tr>
-            ))}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {filteredMoves.map((m) => (
+                <tr key={`${m.id}-${m.method}`}>
+                  <td>{m.display_name}</td>
+                  <td><TypeBadge type={m.type} /></td>
+                  <td>{m.category}</td>
+                  <td>{m.power ?? "—"}</td>
+                  <td>{m.accuracy ?? "—"}</td>
+                  <td>{m.pp ?? "—"}</td>
+                  <td>{m.method === "level-up" ? `Lv ${m.level}` : m.method}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       </section>
     </div>
   );
@@ -193,6 +196,10 @@ function PokedexBrowser({ db }: { db: Database }) {
   const [all, setAll] = useState<PokemonRow[]>([]);
   const [search, setSearch] = useState("");
   const [selected, setSelected] = useState<PokemonRow | null>(null);
+  // Desktop shows list+detail side by side always; on a phone-width screen
+  // there's only room for one pane, so this tracks which one is showing
+  // (CSS below only acts on it under the mobile breakpoint).
+  const [mobileDetailOpen, setMobileDetailOpen] = useState(false);
 
   useEffect(() => {
     listPokemon(db).then((rows) => {
@@ -208,7 +215,7 @@ function PokedexBrowser({ db }: { db: Database }) {
   }, [all, search]);
 
   return (
-    <div className="pokedex">
+    <div className={`pokedex ${mobileDetailOpen ? "mobile-detail-open" : ""}`}>
       <div className="pokedex-list">
         <input
           className="search-box"
@@ -221,7 +228,7 @@ function PokedexBrowser({ db }: { db: Database }) {
             <li
               key={p.id}
               className={selected?.id === p.id ? "selected" : ""}
-              onClick={() => setSelected(p)}
+              onClick={() => { setSelected(p); setMobileDetailOpen(true); }}
             >
               <img src={p.sprite_default ?? undefined} alt="" loading="lazy" />
               <span>
@@ -233,6 +240,7 @@ function PokedexBrowser({ db }: { db: Database }) {
         </ul>
       </div>
       <div className="pokedex-detail">
+        <button className="mobile-back-btn" onClick={() => setMobileDetailOpen(false)}>← Back to list</button>
         {selected ? <PokemonDetail db={db} pokemon={selected} /> : <p>Select a Pokémon</p>}
       </div>
     </div>
@@ -245,9 +253,16 @@ function AppUpdateSection() {
   const [update, setUpdate] = useState<Update | null>(null);
   const [downloadPct, setDownloadPct] = useState(0);
   const [error, setError] = useState<string | null>(null);
+  // The in-place updater plugin only runs on desktop -- Android/iOS builds
+  // don't register it at all (see the cfg-gated dependency in Cargo.toml),
+  // so this branches to a plain "here's your version" note there instead of
+  // a Check for Updates button that would just error out on tap.
+  const [isMobile, setIsMobile] = useState(false);
 
   useEffect(() => {
     getVersion().then(setAppVersion);
+    const p = platform();
+    setIsMobile(p === "android" || p === "ios");
   }, []);
 
   async function handleCheck() {
@@ -289,6 +304,16 @@ function AppUpdateSection() {
       setError(String(e));
       setStatus("error");
     }
+  }
+
+  if (isMobile) {
+    return (
+      <section>
+        <h3>App Updates</h3>
+        <p className="settings-meta">Current version: {appVersion ?? "unknown"}</p>
+        <p className="settings-hint">Updates on Android are delivered wherever you installed this build from, not in-app.</p>
+      </section>
+    );
   }
 
   return (

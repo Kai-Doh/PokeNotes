@@ -400,25 +400,38 @@ function SearchDropdown<T extends { id: number; display_name: string }>({
   renderBadge?: (item: T) => ReactNode;
 }) {
   const [open, setOpen] = useState(false);
+  const [openUpward, setOpenUpward] = useState(false);
   const [text, setText] = useState(value?.display_name ?? "");
+  const containerRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => setText(value?.display_name ?? ""), [value]);
 
+  // On a phone, a field near the bottom of a long scrolled form (common once
+  // the mobile layout stacks everything into one column) would otherwise pop
+  // its ~220px list open mostly below the viewport / behind the keyboard.
+  // Flip it upward instead when there isn't enough room below.
+  function handleOpen() {
+    setOpen(true);
+    const rect = containerRef.current?.getBoundingClientRect();
+    if (rect) setOpenUpward(window.innerHeight - rect.bottom < 240 && rect.top > 240);
+    containerRef.current?.scrollIntoView({ block: "nearest" });
+  }
+
   return (
-    <div className="search-dropdown">
+    <div className="search-dropdown" ref={containerRef}>
       <div className="search-dropdown-input-row">
         {value && renderIcon?.(value)}
         <input
           value={text}
           placeholder={placeholder}
           onFocus={() => {
-            setOpen(true);
+            handleOpen();
             onSearch(text);
           }}
           onChange={(e) => {
             setText(e.target.value);
             onSearch(e.target.value);
-            setOpen(true);
+            handleOpen();
           }}
           onBlur={() => setTimeout(() => setOpen(false), 150)}
         />
@@ -429,7 +442,7 @@ function SearchDropdown<T extends { id: number; display_name: string }>({
         )}
       </div>
       {open && options.length > 0 && (
-        <ul className="search-dropdown-list">
+        <ul className={`search-dropdown-list ${openUpward ? "open-upward" : ""}`}>
           {options.map((opt) => (
             <li key={opt.id} onMouseDown={(e) => { e.preventDefault(); onSelect(opt); setOpen(false); }}>
               {renderIcon?.(opt)}

@@ -28,10 +28,11 @@ body {
   align-items: center;
   justify-content: center;
   gap: 1rem;
+  padding: 0 1rem;
 }
 
 .seed-progress {
-  width: 360px;
+  width: min(360px, 100%);
   display: flex;
   flex-direction: column;
   gap: 0.4rem;
@@ -80,9 +81,9 @@ body {
 
 /* Hamburger button: three bars that morph into an X when open */
 .hamburger-btn {
-  width: 32px;
-  height: 32px;
-  border-radius: 7px;
+  width: 44px;
+  height: 44px;
+  border-radius: 9px;
   border: 1px solid transparent;
   background: transparent;
   cursor: pointer;
@@ -390,6 +391,7 @@ body {
 
 .form-tabs button {
   padding: 0.3rem 0.75rem;
+  min-height: 40px;
   border-radius: 6px;
   border: 1px solid #33343c;
   background: #26272e;
@@ -492,11 +494,18 @@ section h3 {
   border: 1px solid #33343c;
   background: #26272e;
   color: #e8e8ec;
-  width: 240px;
+  width: 100%;
+  max-width: 240px;
+}
+
+.move-table-scroll {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
 }
 
 .move-table {
   width: 100%;
+  min-width: 480px;
   border-collapse: collapse;
   font-size: 0.8rem;
 }
@@ -741,10 +750,10 @@ section h3 {
 
 .slot-clear {
   position: absolute;
-  top: 4px;
-  right: 4px;
-  width: 20px;
-  height: 20px;
+  top: 2px;
+  right: 2px;
+  width: 30px;
+  height: 30px;
   border-radius: 50%;
   border: none;
   background: #33343c;
@@ -1030,6 +1039,7 @@ section h3 {
 
 .move-card-header {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
   gap: 0.5rem;
@@ -1093,10 +1103,10 @@ section h3 {
 
 .move-card-clear {
   position: absolute;
-  top: 6px;
-  right: 6px;
-  width: 18px;
-  height: 18px;
+  top: 4px;
+  right: 4px;
+  width: 28px;
+  height: 28px;
   border-radius: 50%;
   border: none;
   background: #33343c;
@@ -1149,14 +1159,25 @@ section h3 {
 
 .search-dropdown .clear-btn {
   position: absolute;
-  right: 6px;
+  right: 2px;
   top: 50%;
   transform: translateY(-50%);
+  width: 32px;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   background: transparent;
   border: none;
   color: #9a9ba5;
   cursor: pointer;
   font-size: 0.9rem;
+}
+
+.search-dropdown-list.open-upward {
+  top: auto;
+  bottom: 100%;
+  margin: 0 0 2px 0;
 }
 
 .search-dropdown-list {
@@ -1538,6 +1559,112 @@ section h3 {
 .io-result {
   margin-top: 0.75rem;
   font-size: 0.82rem;
+}
+
+/* --- Mobile (phone-width) overrides --- */
+/* Everything above targets desktop; below a phone breakpoint the grids that
+   assume generous horizontal space (6-wide team grid, 3-column set-form,
+   two-pane pokedex master-detail, etc.) get reflowed for a single narrow
+   column instead. Grouped here rather than inline so the whole mobile layer
+   is auditable in one place. */
+
+.mobile-back-btn {
+  display: none;
+}
+
+@media (max-width: 720px) {
+  .team-list-page,
+  .team-editor,
+  .pokedex-detail,
+  .settings {
+    padding: 1rem;
+  }
+
+  /* Team grid: 6 equal columns crush to unreadable ~40px slots on a phone --
+     a 2-column (1-column on very narrow phones) list reads far better than
+     forcing the "one row" desktop layout to survive at any width. */
+  .team-grid {
+    grid-template-columns: repeat(2, 1fr);
+  }
+
+  .team-editor-header {
+    flex-wrap: wrap;
+  }
+  .team-editor-header .team-name-input {
+    flex: 1 1 100%;
+  }
+  .team-editor-header-actions {
+    margin-left: 0;
+    flex: 1 1 100%;
+    justify-content: flex-end;
+  }
+
+  .slot-editor-header {
+    flex-wrap: wrap;
+    gap: 0.5rem;
+  }
+
+  /* Nickname/Ability/Item/Nature/Tera/Level fields: 3 columns leaves each
+     field ~80px wide on a phone, too narrow for a select or text input. */
+  .set-form {
+    grid-template-columns: 1fr;
+  }
+
+  .ev-iv-sliders {
+    grid-template-columns: repeat(2, 1fr);
+  }
+
+  .move-cards {
+    grid-template-columns: 1fr;
+  }
+
+  .detail-header {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 0.75rem;
+  }
+  .detail-sprite {
+    width: 96px;
+    height: 96px;
+  }
+
+  /* Pokedex: no room for a list+detail pane side by side, so only one shows
+     at a time -- .mobile-detail-open (set on selecting a Pokémon) swaps
+     which pane is visible, with a back button to return to the list. */
+  .pokedex {
+    grid-template-columns: 1fr;
+  }
+  .pokedex-list {
+    border-right: none;
+  }
+  .pokedex.mobile-detail-open .pokedex-list {
+    display: none;
+  }
+  .pokedex:not(.mobile-detail-open) .pokedex-detail {
+    display: none;
+  }
+  .mobile-back-btn {
+    display: inline-flex;
+    align-items: center;
+    margin-bottom: 0.75rem;
+    padding: 0.5rem 0.9rem;
+    min-height: 40px;
+    border-radius: 6px;
+    border: 1px solid #33343c;
+    background: transparent;
+    color: #b8b9c5;
+    cursor: pointer;
+    font-size: 0.85rem;
+  }
+}
+
+@media (max-width: 420px) {
+  .team-grid {
+    grid-template-columns: 1fr;
+  }
+  .ev-iv-sliders {
+    grid-template-columns: 1fr;
+  }
 }
 
 .io-warnings {
