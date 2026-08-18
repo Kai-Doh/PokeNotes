@@ -87,7 +87,7 @@ type PickerTarget = "attacker" | "defender" | "move";
 function SpeedTiersView({ db }: { db: Database }) {
   const [formats, setFormats] = useState<FormatRow[]>([]);
   const [formatId, setFormatId] = useState<number | null>(null);
-  const [legal, setLegal] = useState<PokemonRow[]>([]);
+  const [legal, setLegal] = useState<(PokemonRow & { legality_status: string })[]>([]);
   const [query, setQuery] = useState("");
   const [compareIds, setCompareIds] = useState<Set<number>>(new Set());
 
@@ -111,6 +111,12 @@ function SpeedTiersView({ db }: { db: Database }) {
 
   const allRows = useMemo(() => {
     return legal
+      // "Restricted" legendaries (VGC's box-legend cap) are still pickable in
+      // the Team Builder, but here they'd just clutter a quick speed lookup
+      // -- and the current legality data flags *every* legendary restricted,
+      // not just the real box-art ones, so leaving them in would be actively
+      // misleading (see build-pokedex.mjs's officialFormats legality note).
+      .filter((p) => p.legality_status !== "restricted")
       .map((p) => ({
         pokemon: p,
         // Max: 252 EVs, 31 IV, a +Speed nature -- the standard "how fast can this get" benchmark.
