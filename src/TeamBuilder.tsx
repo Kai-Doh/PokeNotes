@@ -295,9 +295,10 @@ function TeamOverviewPanelInner({
   const worstTypesKey = worstTypes.join(",");
 
   const [suggestions, setSuggestions] = useState<Map<string, PokemonRow[]>>(new Map());
+  const [threats, setThreats] = useState<{ pokemon: PokemonRow; usage: number | null; hits: TeamMemberDisplay[] }[]>([]);
+  const membersKey = members.map((m) => m.pokemon_id).join(",");
 
   useEffect(() => {
-    if (!worstTypesKey) { setSuggestions(new Map()); return; }
     let cancelled = false;
     (async () => {
       const [legal, usageRows] = await Promise.all([
@@ -307,21 +308,44 @@ function TeamOverviewPanelInner({
       if (cancelled) return;
       const usage = new Map(usageRows.map((r) => [r.pokemon_id, r.usage_pct]));
       const onTeam = new Set(members.map((m) => m.pokemon_id));
-      const next = new Map<string, PokemonRow[]>();
-      for (const t of worstTypesKey.split(",")) {
-        next.set(
-          t,
-          legal
-            .filter((p) => !onTeam.has(p.id) && dualTypeEffectiveness(t, p.type1, p.type2) < 1)
-            .sort((a, b) => (usage.get(b.id) ?? -1) - (usage.get(a.id) ?? -1))
-            .slice(0, 5),
-        );
+      const notOnTeam = legal.filter((p) => !onTeam.has(p.id));
+
+      if (worstTypesKey) {
+        const next = new Map<string, PokemonRow[]>();
+        for (const t of worstTypesKey.split(",")) {
+          next.set(
+            t,
+            notOnTeam
+              .filter((p) => dualTypeEffectiveness(t, p.type1, p.type2) < 1)
+              .sort((a, b) => (usage.get(b.id) ?? -1) - (usage.get(a.id) ?? -1))
+              .slice(0, 5),
+          );
+        }
+        setSuggestions(next);
+      } else {
+        setSuggestions(new Map());
       }
-      setSuggestions(next);
+
+      // "Top threats": meta Pokémon whose own STAB types hit 2+ teammates
+      // super-effectively -- the inverse of "Coverage suggestions" above,
+      // which recommends teammates to add. This instead surfaces actual
+      // named opponents worth preparing for.
+      const scored = notOnTeam
+        .map((p) => {
+          const hits = members.filter((m) =>
+            dualTypeEffectiveness(p.type1, m.type1, m.type2) > 1 ||
+            (p.type2 !== null && dualTypeEffectiveness(p.type2, m.type1, m.type2) > 1),
+          );
+          return { pokemon: p, usage: usage.get(p.id) ?? null, hits };
+        })
+        .filter((x) => x.hits.length >= 2)
+        .sort((a, b) => b.hits.length - a.hits.length || (b.usage ?? -1) - (a.usage ?? -1))
+        .slice(0, 8);
+      setThreats(scored);
     })();
     return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [db, formatId, worstTypesKey]);
+  }, [db, formatId, worstTypesKey, membersKey]);
 
   return (
     <div className="overview-panel">
@@ -384,6 +408,36 @@ function TeamOverviewPanelInner({
           ))}
         </div>
       )}
+
+      <div className="overview-section">
+        <h5>Top threats</h5>
+        <p className="settings-hint">
+          Meta Pokémon (by usage in this format) whose own types hit 2 or more of your teammates super-effectively.
+        </p>
+        {threats.length === 0 ? (
+          <p className="settings-hint">No meta Pokémon threaten 2+ of your teammates at once. Nice.</p>
+        ) : (
+          threats.map((t) => (
+            <div key={t.pokemon.id} className="suggestion-row threat-row">
+              <div className="suggestion-row-label threat-row-label">
+                {t.pokemon.sprite_default && <img src={t.pokemon.sprite_default} alt="" className="threat-sprite" />}
+                <span>{t.pokemon.display_name}</span>
+                <TypeBadge type={t.pokemon.type1} />
+                {t.pokemon.type2 && <TypeBadge type={t.pokemon.type2} />}
+                {t.usage !== null && <span className="threat-usage">{t.usage.toFixed(1)}% usage</span>}
+              </div>
+              <div className="suggestion-chips">
+                {t.hits.map((m) => (
+                  <div key={m.id} className="suggestion-chip" title={m.pokemon_name}>
+                    {m.pokemon_sprite && <img src={m.pokemon_sprite} alt="" />}
+                    <span>{m.pokemon_name}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ))
+        )}
+      </div>
     </div>
   );
 }

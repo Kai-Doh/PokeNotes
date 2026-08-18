@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
 import type Database from "@tauri-apps/plugin-sql";
 import { calcDamage, type CalcSide } from "./damageMath";
-import { listDamagingMoves, listPokemon } from "./db/queries";
-import { NATURES, STATS } from "./constants/gameData";
+import { getFormats, getLegalPokemonForFormat, listDamagingMoves, listPokemon, type FormatRow } from "./db/queries";
+import { calcStat, NATURES, STATS } from "./constants/gameData";
 import { normalizeKey } from "./showdownFormat";
 import { PickerModal, TypeBadge } from "./TeamBuilder";
 import type { MoveRow, PokemonRow } from "./types/pokedex";
@@ -84,7 +84,81 @@ function StatSideEditor({
 
 type PickerTarget = "attacker" | "defender" | "move";
 
+function SpeedTiersView({ db }: { db: Database }) {
+  const [formats, setFormats] = useState<FormatRow[]>([]);
+  const [formatId, setFormatId] = useState<number | null>(null);
+  const [legal, setLegal] = useState<PokemonRow[]>([]);
+  const [query, setQuery] = useState("");
+
+  useEffect(() => {
+    getFormats(db).then((f) => {
+      setFormats(f);
+      setFormatId((cur) => cur ?? f[0]?.id ?? null);
+    });
+  }, [db]);
+
+  useEffect(() => {
+    if (formatId == null) { setLegal([]); return; }
+    getLegalPokemonForFormat(db, formatId).then(setLegal);
+  }, [db, formatId]);
+
+  const format = formats.find((f) => f.id === formatId) ?? null;
+  const level = format?.is_doubles ? 50 : 100;
+
+  const rows = useMemo(() => {
+    const q = normalizeKey(query);
+    return legal
+      .filter((p) => !q || normalizeKey(p.display_name).includes(q))
+      .map((p) => ({
+        pokemon: p,
+        // Max: 252 EVs, 31 IV, a +Speed nature -- the standard "how fast can this get" benchmark.
+        maxSpeed: calcStat(p.base_spe, 31, 252, level, false, 1.1),
+        // Base: 0 EVs, neutral nature -- what it outspeeds with zero investment.
+        baseSpeed: calcStat(p.base_spe, 31, 0, level, false, 1.0),
+      }))
+      .sort((a, b) => b.maxSpeed - a.maxSpeed);
+  }, [legal, query, level]);
+
+  return (
+    <>
+      <h2>Speed Tiers</h2>
+      <p className="settings-hint">
+        Max = 252 EVs, 31 IV, +Speed nature at level {level}. Base = 0 EVs, neutral nature. Sorted by Max speed.
+      </p>
+
+      <div className="speed-tier-controls">
+        <select value={formatId ?? ""} onChange={(e) => setFormatId(Number(e.target.value))}>
+          {formats.map((f) => <option key={f.id} value={f.id}>{f.name}</option>)}
+        </select>
+        <input
+          type="text"
+          placeholder="Filter species..."
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+        />
+      </div>
+
+      <div className="speed-tier-list">
+        {rows.map((r) => (
+          <div key={r.pokemon.id} className="speed-tier-row">
+            {r.pokemon.sprite_default && <img src={r.pokemon.sprite_default} alt="" className="speed-tier-sprite" />}
+            <span className="speed-tier-name">{r.pokemon.display_name}</span>
+            <span className="battle-preview-types">
+              <TypeBadge type={r.pokemon.type1} />
+              {r.pokemon.type2 && <TypeBadge type={r.pokemon.type2} />}
+            </span>
+            <span className="speed-tier-max">{r.maxSpeed}</span>
+            <span className="speed-tier-base">{r.baseSpeed} base</span>
+          </div>
+        ))}
+        {rows.length === 0 && <p className="settings-hint">No Pokémon match.</p>}
+      </div>
+    </>
+  );
+}
+
 export default function DamageCalc({ db }: { db: Database }) {
+  const [mode, setMode] = useState<"calc" | "speed">("calc");
   const [attacker, setAttacker] = useState<SideState>(defaultSide(null));
   const [defender, setDefender] = useState<SideState>(defaultSide(null));
   const [move, setMove] = useState<MoveRow | null>(null);
@@ -118,8 +192,25 @@ export default function DamageCalc({ db }: { db: Database }) {
     return allMoves.filter((m) => !q || normalizeKey(m.display_name).includes(q)).slice(0, 40);
   }, [query, allMoves]);
 
+  const modeTabs = (
+    <div className="calc-mode-tabs">
+      <button className={mode === "calc" ? "active" : ""} onClick={() => setMode("calc")}>Damage Calc</button>
+      <button className={mode === "speed" ? "active" : ""} onClick={() => setMode("speed")}>Speed Tiers</button>
+    </div>
+  );
+
+  if (mode === "speed") {
+    return (
+      <div className="calc-page">
+        {modeTabs}
+        <SpeedTiersView db={db} />
+      </div>
+    );
+  }
+
   return (
     <div className="calc-page">
+      {modeTabs}
       <h2>Damage Calculator</h2>
       <p className="settings-hint">
         Base formula, STAB, type effectiveness, and the real 16-roll random spread — no items, abilities, weather, or status effects factored in.

@@ -16,6 +16,10 @@ import {
   type FormatRow, type ItemRow,
 } from "./db/queries";
 import { getTeamMembers, listTeams } from "./db/teamQueries";
+import {
+  addChecklistItem, deleteChecklistItem, listChecklistItems, setChecklistItemDone,
+  type ChecklistItem,
+} from "./db/checklistQueries";
 import { normalizeKey } from "./showdownFormat";
 import { ConfirmModal, ItemIcon, PickerModal, TypeBadge } from "./TeamBuilder";
 import { REAL_TYPES } from "./constants/gameData";
@@ -90,6 +94,7 @@ export default function BattleLog({
   const [loggingReplay, setLoggingReplay] = useState(false);
   const [loggingManual, setLoggingManual] = useState(false);
   const [eventFilter, setEventFilter] = useState<string>("");
+  const [checklistEvent, setChecklistEvent] = useState<string | null>(null);
 
   useEffect(() => {
     if (initialBattleId != null) { setSelectedBattleId(initialBattleId); setView("detail"); }
@@ -137,6 +142,11 @@ export default function BattleLog({
                   {events.map((e) => <option key={e} value={e}>{e}</option>)}
                 </select>
               </label>
+              {eventFilter && (
+                <button className="ghost-btn" onClick={() => setChecklistEvent(eventFilter)}>
+                  Prep Checklist
+                </button>
+              )}
             </div>
           )}
           {battles.length === 0 ? (
@@ -192,6 +202,89 @@ export default function BattleLog({
           onSaved={(battleId) => { setLoggingManual(false); reloadBattles(); openBattle(battleId); }}
         />
       )}
+
+      {checklistEvent && (
+        <EventChecklistModal db={db} eventName={checklistEvent} onClose={() => setChecklistEvent(null)} />
+      )}
+    </div>
+  );
+}
+
+function EventChecklistModal({
+  db, eventName, onClose,
+}: { db: Database; eventName: string; onClose: () => void }) {
+  const [items, setItems] = useState<ChecklistItem[]>([]);
+  const [newText, setNewText] = useState("");
+  const [adding, setAdding] = useState(false);
+
+  async function reload() {
+    setItems(await listChecklistItems(db, eventName));
+  }
+
+  useEffect(() => {
+    reload();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [db, eventName]);
+
+  async function handleAdd() {
+    const text = newText.trim();
+    if (!text) return;
+    setAdding(true);
+    try {
+      await addChecklistItem(db, eventName, text);
+      setNewText("");
+      await reload();
+    } finally {
+      setAdding(false);
+    }
+  }
+
+  async function handleToggle(item: ChecklistItem) {
+    await setChecklistItemDone(db, item.id, !item.done);
+    await reload();
+  }
+
+  async function handleDelete(item: ChecklistItem) {
+    await deleteChecklistItem(db, item.id);
+    await reload();
+  }
+
+  const doneCount = items.filter((i) => i.done).length;
+
+  return (
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="modal checklist-modal" onClick={(e) => e.stopPropagation()}>
+        <div className="modal-header">
+          <h3>Prep Checklist — {eventName}</h3>
+          <button className="modal-close" onClick={onClose}>×</button>
+        </div>
+        <div className="checklist-modal-body">
+          <p className="settings-hint">
+            {items.length === 0 ? "Nothing on the list yet." : `${doneCount}/${items.length} done`}
+          </p>
+          <ul className="checklist-items">
+            {items.map((item) => (
+              <li key={item.id} className={`checklist-item ${item.done ? "done" : ""}`}>
+                <label>
+                  <input type="checkbox" checked={!!item.done} onChange={() => handleToggle(item)} />
+                  <span>{item.text}</span>
+                </label>
+                <button className="checklist-item-delete" onClick={() => handleDelete(item)} aria-label="Delete item">×</button>
+              </li>
+            ))}
+          </ul>
+          <div className="checklist-add-row">
+            <input
+              type="text"
+              placeholder="e.g. Confirm team is legal"
+              value={newText}
+              onChange={(e) => setNewText(e.target.value)}
+              onKeyDown={(e) => { if (e.key === "Enter") handleAdd(); }}
+            />
+            <button onClick={handleAdd} disabled={adding || !newText.trim()}>Add</button>
+          </div>
+        </div>
+      </div>
     </div>
   );
 }

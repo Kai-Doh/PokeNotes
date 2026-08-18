@@ -1059,6 +1059,78 @@ section h3 {
   line-height: 1.5;
 }
 
+.checklist-modal {
+  max-width: 440px;
+}
+
+.checklist-modal-body {
+  padding: 1rem 1.25rem 1.25rem;
+  overflow-y: auto;
+}
+
+.checklist-items {
+  list-style: none;
+  margin: 0 0 1rem 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.checklist-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  padding: 0.5rem 0.6rem;
+  border-radius: 8px;
+  background: #26272e;
+  border: 1px solid #33343c;
+}
+
+.checklist-item label {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  font-size: 0.88rem;
+  flex: 1;
+  cursor: pointer;
+}
+
+.checklist-item.done span {
+  text-decoration: line-through;
+  color: #6f7078;
+}
+
+.checklist-item-delete {
+  background: transparent;
+  border: none;
+  color: #6f7078;
+  font-size: 1.1rem;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0.15rem 0.4rem;
+}
+
+.checklist-item-delete:hover {
+  color: #e05252;
+}
+
+.checklist-add-row {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.checklist-add-row input {
+  flex: 1;
+  padding: 0.5rem 0.7rem;
+  border-radius: 6px;
+  border: 1px solid #33343c;
+  background: #1e1f27;
+  color: #e8e8ec;
+  font-size: 0.85rem;
+}
+
 .confirm-modal-actions {
   display: flex;
   justify-content: flex-end;
@@ -1158,6 +1230,81 @@ section h3 {
   overflow-y: auto;
   padding: 1.5rem 2rem;
   max-width: 900px;
+}
+
+.calc-mode-tabs {
+  display: flex;
+  gap: 0.5rem;
+  margin-bottom: 1rem;
+}
+
+.calc-mode-tabs button {
+  padding: 0.4rem 0.9rem;
+  border-radius: 999px;
+  border: 1px solid #33343c;
+  background: transparent;
+  color: #9a9ba5;
+  font-size: 0.82rem;
+  cursor: pointer;
+}
+
+.calc-mode-tabs button.active {
+  background: #33344a;
+  border-color: #7c8cff;
+  color: #e8e8ec;
+}
+
+.speed-tier-controls {
+  display: flex;
+  gap: 0.75rem;
+  margin-bottom: 1rem;
+  flex-wrap: wrap;
+}
+
+.speed-tier-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+
+.speed-tier-row {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.4rem 0.6rem;
+  border-radius: 8px;
+  background: #26272e;
+  border: 1px solid #33343c;
+}
+
+.speed-tier-sprite {
+  width: 28px;
+  height: 28px;
+  image-rendering: pixelated;
+}
+
+.speed-tier-name {
+  flex: 1;
+  font-size: 0.88rem;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.speed-tier-max {
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  min-width: 3ch;
+  text-align: right;
+}
+
+.speed-tier-base {
+  font-variant-numeric: tabular-nums;
+  color: #9a9ba5;
+  font-size: 0.78rem;
+  min-width: 8ch;
+  text-align: right;
 }
 
 .calc-page label {
@@ -2177,6 +2324,24 @@ section h3 {
   image-rendering: pixelated;
 }
 
+.threat-row-label {
+  width: auto;
+  min-width: 220px;
+  flex-wrap: wrap;
+}
+
+.threat-sprite {
+  width: 28px;
+  height: 28px;
+  image-rendering: pixelated;
+}
+
+.threat-usage {
+  color: #9a9ba5;
+  font-size: 0.75rem;
+  margin-left: auto;
+}
+
 .legend-swatch {
   width: 10px;
   height: 10px;
@@ -3074,6 +3239,9 @@ section h3 {
 
 .battle-log-event-filter {
   margin-bottom: 1rem;
+  display: flex;
+  align-items: flex-end;
+  gap: 0.75rem;
 }
 
 .battle-log-event-filter label {

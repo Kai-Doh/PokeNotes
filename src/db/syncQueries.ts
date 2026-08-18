@@ -9,6 +9,7 @@ const SYNCABLE_TABLES = [
   "battle_my_pokemon",
   "battle_opponent_pokemon",
   "battle_notes",
+  "event_checklist_items",
 ] as const;
 
 export interface SyncConfig {
