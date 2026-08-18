@@ -89,6 +89,7 @@ function SpeedTiersView({ db }: { db: Database }) {
   const [formatId, setFormatId] = useState<number | null>(null);
   const [legal, setLegal] = useState<PokemonRow[]>([]);
   const [query, setQuery] = useState("");
+  const [compareIds, setCompareIds] = useState<Set<number>>(new Set());
 
   useEffect(() => {
     getFormats(db).then((f) => {
@@ -100,15 +101,16 @@ function SpeedTiersView({ db }: { db: Database }) {
   useEffect(() => {
     if (formatId == null) { setLegal([]); return; }
     getLegalPokemonForFormat(db, formatId).then(setLegal);
+    setCompareIds(new Set());
   }, [db, formatId]);
 
-  const format = formats.find((f) => f.id === formatId) ?? null;
-  const level = format?.is_doubles ? 50 : 100;
+  // Always level 50 -- the standard speed-tier benchmark regardless of the
+  // format's own singles/doubles level convention (unlike the damage calc
+  // and team builder, which do follow that split).
+  const level = 50;
 
-  const rows = useMemo(() => {
-    const q = normalizeKey(query);
+  const allRows = useMemo(() => {
     return legal
-      .filter((p) => !q || normalizeKey(p.display_name).includes(q))
       .map((p) => ({
         pokemon: p,
         // Max: 252 EVs, 31 IV, a +Speed nature -- the standard "how fast can this get" benchmark.
@@ -117,13 +119,32 @@ function SpeedTiersView({ db }: { db: Database }) {
         baseSpeed: calcStat(p.base_spe, 31, 0, level, false, 1.0),
       }))
       .sort((a, b) => b.maxSpeed - a.maxSpeed);
-  }, [legal, query, level]);
+  }, [legal, level]);
+
+  const rows = useMemo(() => {
+    const q = normalizeKey(query);
+    return allRows.filter((r) => !q || normalizeKey(r.pokemon.display_name).includes(q));
+  }, [allRows, query]);
+
+  const compareRows = useMemo(
+    () => allRows.filter((r) => compareIds.has(r.pokemon.id)),
+    [allRows, compareIds],
+  );
+
+  const toggleCompare = (id: number) => {
+    setCompareIds((cur) => {
+      const next = new Set(cur);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  };
 
   return (
     <>
       <h2>Speed Tiers</h2>
       <p className="settings-hint">
         Max = 252 EVs, 31 IV, +Speed nature at level {level}. Base = 0 EVs, neutral nature. Sorted by Max speed.
+        Check Pokémon to pin them into the comparison panel below.
       </p>
 
       <div className="speed-tier-controls">
@@ -138,9 +159,52 @@ function SpeedTiersView({ db }: { db: Database }) {
         />
       </div>
 
+      {compareRows.length > 0 && (
+        <div className="speed-tier-compare">
+          <div className="speed-tier-compare-header">
+            <h3>Comparing {compareRows.length}</h3>
+            <button type="button" className="ghost-btn" onClick={() => setCompareIds(new Set())}>Clear</button>
+          </div>
+          <div className="speed-tier-list">
+            {compareRows.map((r, i) => {
+              const prev = compareRows[i - 1];
+              const gap = prev ? r.maxSpeed - prev.maxSpeed : null;
+              return (
+                <div key={r.pokemon.id} className="speed-tier-row speed-tier-row--pinned">
+                  <input
+                    type="checkbox"
+                    checked
+                    onChange={() => toggleCompare(r.pokemon.id)}
+                    aria-label={`Remove ${r.pokemon.display_name} from comparison`}
+                  />
+                  {r.pokemon.sprite_default && <img src={r.pokemon.sprite_default} alt="" className="speed-tier-sprite" />}
+                  <span className="speed-tier-name">{r.pokemon.display_name}</span>
+                  <span className="battle-preview-types">
+                    <TypeBadge type={r.pokemon.type1} />
+                    {r.pokemon.type2 && <TypeBadge type={r.pokemon.type2} />}
+                  </span>
+                  {gap != null && <span className="speed-tier-gap">{gap === 0 ? "tied" : `−${gap}`}</span>}
+                  <span className="speed-tier-max">{r.maxSpeed}</span>
+                  <span className="speed-tier-base">{r.baseSpeed} base</span>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
       <div className="speed-tier-list">
         {rows.map((r) => (
-          <div key={r.pokemon.id} className="speed-tier-row">
+          <div
+            key={r.pokemon.id}
+            className={"speed-tier-row" + (compareIds.has(r.pokemon.id) ? " speed-tier-row--pinned" : "")}
+          >
+            <input
+              type="checkbox"
+              checked={compareIds.has(r.pokemon.id)}
+              onChange={() => toggleCompare(r.pokemon.id)}
+              aria-label={`Compare ${r.pokemon.display_name}`}
+            />
             {r.pokemon.sprite_default && <img src={r.pokemon.sprite_default} alt="" className="speed-tier-sprite" />}
             <span className="speed-tier-name">{r.pokemon.display_name}</span>
             <span className="battle-preview-types">

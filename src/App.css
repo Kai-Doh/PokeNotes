@@ -1307,6 +1307,39 @@ section h3 {
   text-align: right;
 }
 
+.speed-tier-row--pinned {
+  background: #2c2f45;
+  border-color: #7c8cff;
+}
+
+.speed-tier-compare {
+  margin-bottom: 1.25rem;
+  padding: 0.75rem;
+  border-radius: 10px;
+  border: 1px solid #33344a;
+  background: #1e1f29;
+}
+
+.speed-tier-compare-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 0.5rem;
+}
+
+.speed-tier-compare-header h3 {
+  margin: 0;
+  font-size: 0.95rem;
+}
+
+.speed-tier-gap {
+  font-variant-numeric: tabular-nums;
+  color: #9a9ba5;
+  font-size: 0.78rem;
+  min-width: 4.5ch;
+  text-align: right;
+}
+
 .calc-page label {
   display: flex;
   flex-direction: column;
