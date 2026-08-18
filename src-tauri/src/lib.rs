@@ -16,6 +16,24 @@ fn migrations() -> Vec<Migration> {
             sql: include_str!("../migrations/0002_app_meta.sql"),
             kind: MigrationKind::Up,
         },
+        Migration {
+            version: 3,
+            description: "item battle flag",
+            sql: include_str!("../migrations/0003_item_battle_flag.sql"),
+            kind: MigrationKind::Up,
+        },
+        Migration {
+            version: 4,
+            description: "showdown name",
+            sql: include_str!("../migrations/0004_showdown_name.sql"),
+            kind: MigrationKind::Up,
+        },
+        Migration {
+            version: 5,
+            description: "usage stats",
+            sql: include_str!("../migrations/0005_usage_stats.sql"),
+            kind: MigrationKind::Up,
+        },
     ]
 }
 
@@ -29,6 +47,7 @@ pub fn run() {
         )
         .plugin(tauri_plugin_http::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_process::init())
         .plugin(
             tauri_plugin_sql::Builder::default()
                 .add_migrations(DB_URL, migrations())

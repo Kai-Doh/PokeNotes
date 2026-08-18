@@ -17,7 +17,7 @@ const TABLE_SPECS: { table: string; file: string; columns: string[] }[] = [
       "is_default_form", "form_category", "generation", "type1", "type2",
       "base_hp", "base_atk", "base_def", "base_spa", "base_spd", "base_spe",
       "height_dm", "weight_hg", "sprite_default", "sprite_shiny", "sprite_official_art",
-      "sprite_home", "is_mega", "is_gmax", "is_legendary", "is_mythical", "is_restricted", "showdown_id",
+      "sprite_home", "is_mega", "is_gmax", "is_legendary", "is_mythical", "is_restricted", "showdown_id", "showdown_name",
     ],
   },
   {
@@ -41,7 +41,7 @@ const TABLE_SPECS: { table: string; file: string; columns: string[] }[] = [
   {
     table: "items",
     file: "items",
-    columns: ["id", "name", "display_name", "category", "short_effect", "effect", "sprite", "generation"],
+    columns: ["id", "name", "display_name", "category", "is_battle_item", "short_effect", "effect", "sprite", "generation"],
   },
   {
     table: "formats",
@@ -57,6 +57,21 @@ const TABLE_SPECS: { table: string; file: string; columns: string[] }[] = [
     table: "learnsets",
     file: "learnsets",
     columns: ["pokemon_id", "move_id", "method", "level", "generation"],
+  },
+  {
+    table: "pokemon_usage",
+    file: "pokemon_usage",
+    columns: ["format_id", "pokemon_id", "rank", "usage_pct"],
+  },
+  {
+    table: "item_usage",
+    file: "item_usage",
+    columns: ["format_id", "pokemon_id", "item_id", "usage_pct"],
+  },
+  {
+    table: "ability_usage",
+    file: "ability_usage",
+    columns: ["format_id", "pokemon_id", "ability_id", "usage_pct"],
   },
 ];
 
@@ -129,8 +144,13 @@ async function loadPokedexTables(
   );
 }
 
+// `cache: "no-store"` matters here beyond just dev-mode freshness: WebView2
+// keeps a real persistent HTTP cache across app relaunches (separate from the
+// app data dir), so a stale cached response for the same URL can silently
+// survive a full restart. That would also break "Refresh Pokédex Data" in
+// production, since it re-fetches these exact same URLs.
 async function fetchLocalSeed(file: string): Promise<unknown[]> {
-  const res = await fetch(`./seed/${file}.json`);
+  const res = await fetch(`./seed/${file}.json`, { cache: "no-store" });
   if (!res.ok) throw new Error(`Failed to load seed/${file}.json: ${res.status}`);
   return res.json();
 }
@@ -160,7 +180,7 @@ async function seedIfNeeded(db: Database, onProgress?: OnProgress) {
 const REMOTE_SEED_BASE = "https://raw.githubusercontent.com/Kai-Doh/PokeNotes/main/public/seed";
 
 async function fetchRemoteSeed(file: string): Promise<unknown[]> {
-  const res = await fetch(`${REMOTE_SEED_BASE}/${file}.json`);
+  const res = await fetch(`${REMOTE_SEED_BASE}/${file}.json`, { cache: "no-store" });
   if (!res.ok) throw new Error(`Failed to download ${file}.json: ${res.status}`);
   return res.json();
 }

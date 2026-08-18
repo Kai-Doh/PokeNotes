@@ -24,6 +24,7 @@ export interface PokemonRow {
   is_legendary: number;
   is_mythical: number;
   showdown_id: string;
+  showdown_name: string | null;
 }
 
 export interface AbilityRef {

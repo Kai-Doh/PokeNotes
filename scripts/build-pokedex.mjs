@@ -11,6 +11,13 @@ import { existsSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { Dex } from "@pkmn/dex";
+import * as cheerio from "cheerio";
+// pokemon-showdown (published directly by Smogon) rather than @pkmn/sim: the
+// @pkmn fork lags behind Showdown's live server config, and as of this run
+// doesn't yet know about the "Champions" formats/mod at all. It's CommonJS,
+// hence the default-import + destructure instead of a named import.
+import PokemonShowdown from "pokemon-showdown";
+const { Dex: SimDex } = PokemonShowdown;
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const CACHE_DIR = path.join(__dirname, ".cache");
@@ -186,6 +193,134 @@ function normalizeNatDexTier(t) {
   return t;
 }
 
+// --- LimitlessVGC usage stats (real tournament usage %, not just legality) ---
+// robots.txt is unrestricted and /about states no reuse restriction beyond the
+// standard "not affiliated with Nintendo" disclaimer, as of the run that added
+// this. Scraped once per pipeline run (cached like the CSVs), not at app
+// runtime -- the app only ever loads the pre-built JSON this writes.
+const LIMITLESS_BASE = "https://limitlessvgc.com";
+const LIMITLESS_CACHE_DIR = path.join(CACHE_DIR, "limitless");
+const LIMITLESS_UA = "PokeNotes-DataPipeline/1.0 (+https://github.com/Kai-Doh/PokeNotes)";
+
+function normalizeUsageKey(s) {
+  return s.toLowerCase().replace(/[^a-z0-9]/g, "");
+}
+
+async function fetchLimitlessHtml(urlPath) {
+  const cachePath = path.join(LIMITLESS_CACHE_DIR, `${urlPath.replace(/[^a-z0-9]/gi, "_")}.html`);
+  if (existsSync(cachePath)) return readFile(cachePath, "utf-8");
+  const res = await fetch(`${LIMITLESS_BASE}${urlPath}`, { headers: { "User-Agent": LIMITLESS_UA } });
+  if (!res.ok) throw new Error(`Failed to fetch ${urlPath}: ${res.status}`);
+  const text = await res.text();
+  await mkdir(LIMITLESS_CACHE_DIR, { recursive: true });
+  await writeFile(cachePath, text, "utf-8");
+  await new Promise((r) => setTimeout(r, 250)); // be a polite scraper
+  return text;
+}
+
+// Showdown regulation names look like "VGC 2026 Reg M-B" -- LimitlessVGC's
+// `format` query param is the same regulation letter(s), lowercased and
+// hyphenated ("m-b"). Used only as a fallback (see fetchLimitlessCurrentRegSlug
+// below) since a brand-new regulation on Showdown's ladder can predate real
+// tournament data existing for it on LimitlessVGC by weeks.
+function regulationSlugFromName(name) {
+  const m = name.match(/Reg\.?\s+([A-Za-z])(?:-([A-Za-z]))?/i);
+  if (!m) return null;
+  return m[2] ? `${m[1].toLowerCase()}-${m[2].toLowerCase()}` : m[1].toLowerCase();
+}
+
+// LimitlessVGC's own homepage names whichever regulation it currently has
+// tournament data compiled for (via its "Complete Pokémon Ranking" link),
+// which is the source of truth here -- it can lag a freshly-announced
+// regulation on Showdown's ladder by weeks until real tournaments happen.
+async function fetchLimitlessCurrentRegSlug() {
+  const html = await fetchLimitlessHtml("/");
+  const $ = cheerio.load(html);
+  const href = $('a[href^="/pokemon?format="]').first().attr("href");
+  if (!href) return null;
+  const m = href.match(/format=([a-z0-9-]+)/i);
+  return m ? m[1].toLowerCase() : null;
+}
+
+/** Parses the { rank -> name% } rows out of one of the detail page's stat tables. */
+function parseUsageRows($, table) {
+  const rows = [];
+  $(table)
+    .find("tbody tr")
+    .each((_, tr) => {
+      const tds = $(tr).find("td");
+      // Items rows have 4 cells (rank, icon, name, %); moves/abilities have 3
+      // (rank, name, %) -- name/pct are always the last two either way.
+      const name = $(tds[tds.length - 2]).text().trim();
+      const pct = parseFloat($(tds[tds.length - 1]).text().trim().replace("%", ""));
+      if (name && !Number.isNaN(pct)) rows.push({ name, pct });
+    });
+  return rows;
+}
+
+async function scrapeUsageStats(formatFid, regSlug, outPokemon, outItems, outAbilities) {
+  // LimitlessVGC's URL slugs (e.g. "floette-eternal") strip to the same bare,
+  // lowercase, hyphen-free id Showdown uses internally ("floetteeternal"),
+  // which is exactly what showdown_id already holds -- far more reliable
+  // than matching on display text, which doesn't encode form/word order.
+  const pokemonByShowdownId = new Map(outPokemon.map((p) => [p.showdown_id, p]));
+  const itemByKey = new Map(outItems.map((it) => [normalizeUsageKey(it.display_name), it.id]));
+  const abilityByKey = new Map(outAbilities.map((a) => [normalizeUsageKey(a.display_name), a.id]));
+
+  console.log(`  Fetching ranking for format=${regSlug}...`);
+  const rankingHtml = await fetchLimitlessHtml(`/pokemon?format=${regSlug}&show=100`);
+  const $ = cheerio.load(rankingHtml);
+
+  const pokemonUsage = [];
+  const targets = []; // { slug, pokemonId } for detail-page scraping
+  let totalRows = 0;
+  $("table.data-table tr")
+    .has("td")
+    .each((_, tr) => {
+      totalRows++;
+      const tds = $(tr).find("td");
+      if (tds.length < 5) return;
+      const rank = Number($(tds[0]).text().trim());
+      const href = $(tds[2]).find("a").attr("href") || "";
+      const slug = href.replace(/^\/pokemon\//, "");
+      const pct = parseFloat($(tds[4]).text().trim().replace("%", ""));
+      if (!slug || Number.isNaN(pct)) return;
+      const matched = pokemonByShowdownId.get(slug.replace(/-/g, "").toLowerCase());
+      if (!matched) return;
+      pokemonUsage.push({ format_id: formatFid, pokemon_id: matched.id, rank, usage_pct: pct });
+      targets.push({ slug, pokemonId: matched.id });
+    });
+  console.log(`  Matched ${pokemonUsage.length}/${totalRows} ranked Pokémon to our dex.`);
+
+  const itemUsage = [];
+  const abilityUsage = [];
+  for (const { slug, pokemonId } of targets) {
+    let detailHtml;
+    try {
+      detailHtml = await fetchLimitlessHtml(`/pokemon/${slug}?format=${regSlug}`);
+    } catch (err) {
+      console.warn(`  Skipping usage detail for ${slug}: ${err.message}`);
+      continue;
+    }
+    const $$ = cheerio.load(detailHtml);
+    $$("table.data-table").each((_, table) => {
+      const header = $$(table).find("thead th").first().text().trim();
+      if (header !== "Items" && header !== "Abilities") return;
+      for (const { name, pct } of parseUsageRows($$, table)) {
+        if (header === "Items") {
+          const itemId = itemByKey.get(normalizeUsageKey(name));
+          if (itemId) itemUsage.push({ format_id: formatFid, pokemon_id: pokemonId, item_id: itemId, usage_pct: pct });
+        } else {
+          const abilityId = abilityByKey.get(normalizeUsageKey(name));
+          if (abilityId) abilityUsage.push({ format_id: formatFid, pokemon_id: pokemonId, ability_id: abilityId, usage_pct: pct });
+        }
+      }
+    });
+  }
+
+  return { pokemonUsage, itemUsage, abilityUsage };
+}
+
 async function main() {
   console.log("Fetching PokeAPI CSVs (cached after first run)...");
   const [
@@ -211,6 +346,7 @@ async function main() {
     itemNames,
     itemProse,
     itemFlavorText,
+    itemCategories,
   ] = await Promise.all([
     fetchCsv("pokemon"),
     fetchCsv("pokemon_species"),
@@ -234,6 +370,7 @@ async function main() {
     fetchCsv("item_names"),
     fetchCsv("item_prose"),
     fetchCsv("item_flavor_text"),
+    fetchCsv("item_categories"),
   ]);
 
   console.log("Joining Pokemon + forms...");
@@ -425,6 +562,18 @@ async function main() {
     const prev = latestFlavorByItem.get(r.item_id);
     if (!prev || Number(r.version_group_id) > Number(prev.version_group_id)) latestFlavorByItem.set(r.item_id, r);
   }
+  const categoryNameById = toMap(itemCategories, "id");
+  // Curated allowlist of PokeAPI item-category identifiers that are plausible
+  // competitive HELD items -- everything else (Poke Balls, key items, TMs,
+  // vitamins, mail, evolution stones, apricorns, etc.) is real PokeAPI data
+  // but not something you'd ever actually hold in a battle, so it just
+  // clutters the team builder's item search.
+  const BATTLE_ITEM_CATEGORIES = new Set([
+    "held-items", "choice", "type-enhancement", "plates", "species-specific",
+    "mega-stones", "z-crystals", "memories", "dynamax-crystals", "jewels",
+    "bad-held-items", "effort-drop", "medicine", "in-a-pinch", "picky-healing",
+    "type-protection",
+  ]);
   const seenItemNames = new Set();
   const outItems = [];
   for (const it of items) {
@@ -435,11 +584,13 @@ async function main() {
     seenItemNames.add(name);
     const prose = itemProse.find((r) => r.item_id === it.id && r.local_language_id === EN);
     const flavor = latestFlavorByItem.get(it.id);
+    const categoryName = categoryNameById.get(it.category_id)?.identifier || null;
     outItems.push({
       id: Number(it.id),
       name,
       display_name: englishName(itemNames, "item_id", it.id) || it.identifier,
-      category: it.category_id || null,
+      category: categoryName,
+      is_battle_item: categoryName && BATTLE_ITEM_CATEGORIES.has(categoryName) ? 1 : 0,
       short_effect: prose?.short_effect || flavor?.flavor_text?.replace(/\n|\f/g, " ") || null,
       effect: prose?.effect || null,
       sprite: `https://raw.githubusercontent.com/PokeAPI/sprites/master/sprites/items/${it.identifier}.png`,
@@ -494,8 +645,14 @@ async function main() {
       p._tier = sd.tier;
       p._doublesTier = normalizeDoublesTier(sd.doublesTier);
       p._natDexTier = normalizeNatDexTier(sd.natDexTier);
+      // The exact display string Showdown itself uses (e.g. "Charizard-Mega-X",
+      // "Necrozma-Dusk-Mane") -- needed verbatim for team export/import to
+      // round-trip correctly, since our own form_label wording doesn't match
+      // Showdown's naming convention closely enough to reconstruct reliably.
+      p.showdown_name = sd.name;
     } else {
       unmatched.push(p.name);
+      p.showdown_name = p.display_name;
     }
   }
   console.log(`Showdown tier match: ${matched}/${outPokemon.length} (${unmatched.length} unmatched)`);
@@ -504,13 +661,57 @@ async function main() {
     console.log(`  -> unmatched names written to scripts/.cache/unmatched-showdown-ids.json`);
   }
 
+  // Showdown format rulesets sometimes inherit clauses by referencing another
+  // format's name (e.g. "National Dex UU"'s ruleset is just ["[Gen 9] National
+  // Dex"]) rather than repeating them, so detecting a banned mechanic means
+  // following those references rather than reading one format's array alone.
+  // A mechanic can also be disabled at the mod level rather than via a
+  // ruleset clause -- the "champions" mod hardcodes canTerastallize() to
+  // always return null (data/mods/champions/scripts.ts), which never shows
+  // up as a "Terastal Clause" ruleset entry.
+  function isTeraBanned(code, depth = 0) {
+    if (depth > 6) return false;
+    const f = SimDex.formats.get(code);
+    if (!f || !f.exists) return false;
+    if (f.mod && f.mod.startsWith("champions")) return true;
+    const ruleset = f.ruleset || [];
+    if (ruleset.includes("Terastal Clause")) return true;
+    for (const entry of ruleset) {
+      if (entry.startsWith("!")) continue;
+      const ref = SimDex.formats.get(entry);
+      if (ref && ref.exists && ref.id !== f.id && isTeraBanned(ref.id, depth + 1)) return true;
+    }
+    return false;
+  }
+
+  function buildRuleset(code) {
+    const f = SimDex.formats.get(code);
+    if (!f || !f.exists) return null;
+    return JSON.stringify({
+      tera_allowed: !isTeraBanned(code),
+      clauses: f.ruleset || [],
+      banlist: f.banlist || [],
+    });
+  }
+
+  // Finds the currently-active Showdown format matching a name pattern,
+  // instead of a hardcoded format id that goes stale the moment a new season
+  // or regulation ships. "Currently active" = still on the ladder
+  // (searchShow !== false) and not a Best-of-3 variant of another match.
+  function findCurrentFormat(namePattern) {
+    const candidates = SimDex.formats
+      .all()
+      .filter((f) => f.searchShow !== false && namePattern.test(f.name) && !/\(Bo3\)/.test(f.name));
+    return candidates[candidates.length - 1] ?? null; // formats.ts lists newest last within a section
+  }
+
   const formats = [];
   const formatLegality = [];
   let formatId = 1;
 
   function addTierFormat(code, name, order, tierField, isDoubles) {
     const fid = formatId++;
-    formats.push({ id: fid, code, name, source: "showdown", generation: 9, is_doubles: isDoubles ? 1 : 0, ruleset: null });
+    formats.push({ id: fid, code, name, source: "showdown", generation: 9, is_doubles: isDoubles ? 1 : 0, ruleset: buildRuleset(code) });
     const rank = order.indexOf(tierField.target);
     for (const p of outPokemon) {
       const tier = tierField.get(p);
@@ -541,16 +742,70 @@ async function main() {
   addTierFormat("gen9nationaldex", "Gen 9 National Dex", NATDEX_TIER_ORDER, { get: natDexGet, target: "Uber" }, false);
   addTierFormat("gen9nationaldexuu", "Gen 9 National Dex UU", NATDEX_TIER_ORDER, { get: natDexGet, target: "UU" }, false);
 
-  // Official VGC / Pokemon Champions formats: curated per-regulation banlists aren't
-  // encoded yet, so default to a conservative signal (mythicals banned, legendaries
-  // flagged restricted) that you can refine per-regulation later in the app.
-  const officialFormats = [
-    { code: "champions-current", name: "Pokemon Champions (Current Series)" },
-    { code: "vgc-current", name: "VGC (Current Regulation)" },
-  ];
+  // Official VGC / Pokemon Champions format(s): curated per-regulation
+  // banlists (which species are restricted) aren't encoded yet, so species
+  // legality defaults to a conservative signal (mythicals banned, legendaries
+  // flagged restricted). Mechanic-level rules (Tera allowed, clauses, etc.)
+  // are read from whichever real Showdown format is *currently active*,
+  // found by name pattern rather than a hardcoded regulation id -- so a new
+  // season/regulation is picked up automatically on the next run.
+  //
+  // Team building only cares about the ruleset, not which app you'll play a
+  // given battle in -- that's tracked separately per-battle via
+  // battles.source ('showdown' | 'champions' | 'manual'), independent of
+  // format_id. So: one row when Showdown's plain VGC ladder and the
+  // Champions ladder currently share a ruleset (true as of this run, since
+  // the plain VGC ladder is retired), splitting into two automatically if a
+  // plain VGC ladder becomes active again with different rules.
+  const baseNote = "Mythicals banned by default; legendaries flagged restricted. Verify against the current regulation and adjust in-app.";
+
+  function buildOfficialRuleset(format, extraNote) {
+    if (!format) {
+      return JSON.stringify({ note: `${baseNote} No matching active Showdown format found -- defaults assumed.`, tera_allowed: true, clauses: [] });
+    }
+    return JSON.stringify({
+      note: extraNote ? `${baseNote} ${extraNote}` : `${baseNote} Auto-detected from Showdown format "${format.name}".`,
+      tera_allowed: !isTeraBanned(format.id),
+      clauses: format.ruleset || [],
+      source_format: format.id,
+    });
+  }
+
+  const currentChampionsVgc = findCurrentFormat(/^\[Gen 9 Champions\] VGC \d{4}/);
+  const currentPlainVgc = findCurrentFormat(/^\[Gen 9\] VGC \d{4}/);
+  const shared = currentPlainVgc === null || currentPlainVgc === currentChampionsVgc;
+
+  const officialFormats = shared
+    ? [
+        {
+          code: "official-current",
+          name: currentChampionsVgc ? `VGC / Pokemon Champions (${currentChampionsVgc.name.replace(/^\[Gen 9 Champions\] /, "")})` : "VGC / Pokemon Champions (Current)",
+          ruleset: buildOfficialRuleset(
+            currentChampionsVgc,
+            "Showdown's plain VGC ladder and the Champions ladder currently share this ruleset (the plain ladder is retired), so this single format covers battles logged from either source.",
+          ),
+        },
+      ]
+    : [
+        {
+          code: "champions-current",
+          name: `Pokemon Champions (${currentChampionsVgc.name.replace(/^\[Gen 9 Champions\] /, "")})`,
+          ruleset: buildOfficialRuleset(currentChampionsVgc),
+        },
+        {
+          code: "vgc-current",
+          name: `VGC (${currentPlainVgc.name.replace(/^\[Gen 9\] /, "")})`,
+          ruleset: buildOfficialRuleset(currentPlainVgc),
+        },
+      ];
+  // Whichever official format tracks the Champions/VGC ladder is the one
+  // LimitlessVGC's usage stats apply to -- remembered here so the scrape
+  // below can attach rows to the right format_id.
+  let usageFormatFid = null;
   for (const of of officialFormats) {
     const fid = formatId++;
-    formats.push({ id: fid, code: of.code, name: of.name, source: "official", generation: 9, is_doubles: 1, ruleset: JSON.stringify({ note: "Mythicals banned by default; legendaries flagged restricted. Verify against the current regulation and adjust in-app." }) });
+    formats.push({ id: fid, code: of.code, name: of.name, source: "official", generation: 9, is_doubles: 1, ruleset: of.ruleset });
+    if (of.code === "official-current" || of.code === "champions-current") usageFormatFid = fid;
     for (const p of outPokemon) {
       if (!p.is_default_form && p.form_category !== "gmax") continue; // battle-only alt formes handled via base entry
       let status = "allowed";
@@ -562,6 +817,31 @@ async function main() {
 
   for (const p of outPokemon) { delete p._tier; delete p._doublesTier; delete p._natDexTier; }
 
+  // --- LimitlessVGC usage stats (best-effort: a scrape hiccup shouldn't fail the whole build) ---
+  let outPokemonUsage = [];
+  let outItemUsage = [];
+  let outAbilityUsage = [];
+  let regSlug = null;
+  try {
+    regSlug = await fetchLimitlessCurrentRegSlug();
+  } catch (err) {
+    console.warn(`Could not detect LimitlessVGC's current regulation: ${err.message}`);
+  }
+  if (!regSlug && currentChampionsVgc) regSlug = regulationSlugFromName(currentChampionsVgc.name);
+  if (usageFormatFid && regSlug) {
+    console.log(`Scraping LimitlessVGC usage stats (format=${regSlug})...`);
+    try {
+      const usage = await scrapeUsageStats(usageFormatFid, regSlug, outPokemon, outItems, outAbilities);
+      outPokemonUsage = usage.pokemonUsage;
+      outItemUsage = usage.itemUsage;
+      outAbilityUsage = usage.abilityUsage;
+    } catch (err) {
+      console.warn(`LimitlessVGC usage scrape failed, continuing without it: ${err.message}`);
+    }
+  } else {
+    console.log("Skipping LimitlessVGC usage scrape: no current regulation detected.");
+  }
+
   await mkdir(OUT_DIR, { recursive: true });
   await writeFile(path.join(OUT_DIR, "pokemon.json"), JSON.stringify(outPokemon));
   await writeFile(path.join(OUT_DIR, "abilities.json"), JSON.stringify(outAbilities));
@@ -571,6 +851,9 @@ async function main() {
   await writeFile(path.join(OUT_DIR, "learnsets.json"), JSON.stringify(outLearnsets));
   await writeFile(path.join(OUT_DIR, "formats.json"), JSON.stringify(formats));
   await writeFile(path.join(OUT_DIR, "format_legality.json"), JSON.stringify(formatLegality));
+  await writeFile(path.join(OUT_DIR, "pokemon_usage.json"), JSON.stringify(outPokemonUsage));
+  await writeFile(path.join(OUT_DIR, "item_usage.json"), JSON.stringify(outItemUsage));
+  await writeFile(path.join(OUT_DIR, "ability_usage.json"), JSON.stringify(outAbilityUsage));
 
   console.log("Done. Wrote:");
   console.log(`  pokemon: ${outPokemon.length}`);
@@ -581,6 +864,9 @@ async function main() {
   console.log(`  learnsets: ${outLearnsets.length}`);
   console.log(`  formats: ${formats.length}`);
   console.log(`  format_legality: ${formatLegality.length}`);
+  console.log(`  pokemon_usage: ${outPokemonUsage.length}`);
+  console.log(`  item_usage: ${outItemUsage.length}`);
+  console.log(`  ability_usage: ${outAbilityUsage.length}`);
 }
 
 // --- static lookup tables (small, stable, not worth a network fetch) ---

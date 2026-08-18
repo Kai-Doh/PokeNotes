@@ -1,9 +1,13 @@
 import { useEffect, useMemo, useState } from "react";
 import type Database from "@tauri-apps/plugin-sql";
+import { getVersion } from "@tauri-apps/api/app";
+import { check, type Update } from "@tauri-apps/plugin-updater";
+import { relaunch } from "@tauri-apps/plugin-process";
 import { getDb } from "./db/client";
 import { getPokedexUpdatedAt, refreshPokedexData, seedDatabaseIfNeeded, type SeedProgress } from "./db/pokedex-data";
 import { getAbilitiesFor, getBattleFormVariants, getFormatLegalityFor, getLearnsetFor, listPokemon } from "./db/queries";
 import type { AbilityRef, FormatLegalityEntry, LearnsetMove, PokemonRow } from "./types/pokedex";
+import TeamBuilder from "./TeamBuilder";
 import "./App.css";
 
 function useDatabase() {
@@ -235,6 +239,98 @@ function PokedexBrowser({ db }: { db: Database }) {
   );
 }
 
+function AppUpdateSection() {
+  const [appVersion, setAppVersion] = useState<string | null>(null);
+  const [status, setStatus] = useState<"idle" | "checking" | "up-to-date" | "available" | "downloading" | "ready" | "error">("idle");
+  const [update, setUpdate] = useState<Update | null>(null);
+  const [downloadPct, setDownloadPct] = useState(0);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    getVersion().then(setAppVersion);
+  }, []);
+
+  async function handleCheck() {
+    setStatus("checking");
+    setError(null);
+    try {
+      const found = await check();
+      if (found) {
+        setUpdate(found);
+        setStatus("available");
+      } else {
+        setStatus("up-to-date");
+      }
+    } catch (e) {
+      setError(String(e));
+      setStatus("error");
+    }
+  }
+
+  async function handleInstall() {
+    if (!update) return;
+    setStatus("downloading");
+    setError(null);
+    try {
+      let total = 0;
+      let received = 0;
+      await update.downloadAndInstall((event) => {
+        if (event.event === "Started") {
+          total = event.data.contentLength ?? 0;
+        } else if (event.event === "Progress") {
+          received += event.data.chunkLength;
+          setDownloadPct(total > 0 ? Math.round((received / total) * 100) : 0);
+        } else if (event.event === "Finished") {
+          setStatus("ready");
+        }
+      });
+      await relaunch();
+    } catch (e) {
+      setError(String(e));
+      setStatus("error");
+    }
+  }
+
+  return (
+    <section>
+      <h3>App Updates</h3>
+      <p className="settings-hint">
+        Checks GitHub Releases for a newer build of PokeNotes and installs it in place.
+      </p>
+      <p className="settings-meta">Current version: {appVersion ?? "unknown"}</p>
+
+      {status !== "available" && status !== "downloading" && status !== "ready" && (
+        <button onClick={handleCheck} disabled={status === "checking"}>
+          {status === "checking" ? "Checking..." : "Check for Updates"}
+        </button>
+      )}
+
+      {status === "up-to-date" && <p className="settings-message">You're on the latest version.</p>}
+
+      {status === "available" && update && (
+        <div className="settings-message">
+          <p>Version {update.version} is available{update.body ? ":" : "."}</p>
+          {update.body && <p className="settings-hint">{update.body}</p>}
+          <button onClick={handleInstall}>Install & Restart</button>
+        </div>
+      )}
+
+      {status === "downloading" && (
+        <div className="seed-progress">
+          <div className="seed-progress-track">
+            <div className="seed-progress-fill" style={{ width: `${downloadPct}%` }} />
+          </div>
+          <span>Downloading update... {downloadPct}%</span>
+        </div>
+      )}
+
+      {status === "ready" && <p className="settings-message">Update installed. Restarting...</p>}
+
+      {status === "error" && error && <p className="settings-message">Update check failed: {error}</p>}
+    </section>
+  );
+}
+
 function SettingsView({ db }: { db: Database }) {
   const [updatedAt, setUpdatedAt] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
@@ -289,13 +385,60 @@ function SettingsView({ db }: { db: Database }) {
         )}
         {message && <p className="settings-message">{message}</p>}
       </section>
+
+      <AppUpdateSection />
     </div>
   );
 }
 
+const NAV_ITEMS = [
+  {
+    id: "pokedex" as const,
+    label: "Pokédex",
+    icon: (
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
+        <circle cx="12" cy="12" r="9" />
+        <path d="M3 12h6a3 3 0 0 0 6 0h6" />
+        <circle cx="12" cy="12" r="2" />
+      </svg>
+    ),
+  },
+  {
+    id: "teams" as const,
+    label: "Teams",
+    icon: (
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
+        <circle cx="8" cy="8" r="3" />
+        <circle cx="17" cy="9" r="2.5" />
+        <path d="M2.5 20c0-3.3 2.5-6 5.5-6s5.5 2.7 5.5 6" />
+        <path d="M14.5 14.3c2.4.4 4 2.6 4 5.7" />
+      </svg>
+    ),
+  },
+];
+
+const SETTINGS_NAV_ITEM = {
+  id: "settings" as const,
+  label: "Settings",
+  icon: (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
+      <circle cx="12" cy="12" r="3" />
+      <path d="M19.4 13a7.6 7.6 0 0 0 0-2l2-1.6-2-3.4-2.4 1a7.6 7.6 0 0 0-1.7-1L14.9 3h-3.8l-.4 2.6a7.6 7.6 0 0 0-1.7 1l-2.4-1-2 3.4L6.6 11a7.6 7.6 0 0 0 0 2l-2 1.6 2 3.4 2.4-1a7.6 7.6 0 0 0 1.7 1l.4 2.6h3.8l.4-2.6a7.6 7.6 0 0 0 1.7-1l2.4 1 2-3.4-2-1.6Z" />
+    </svg>
+  ),
+};
+
 function App() {
   const { db, progress, error } = useDatabase();
-  const [view, setView] = useState<"pokedex" | "settings">("pokedex");
+  const [view, setView] = useState<"pokedex" | "teams" | "settings">("pokedex");
+  const [sidebarOpen, setSidebarOpen] = useState(false);
+
+  useEffect(() => {
+    if (!sidebarOpen) return;
+    const onKey = (e: KeyboardEvent) => e.key === "Escape" && setSidebarOpen(false);
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [sidebarOpen]);
 
   if (error) return <main className="container"><p className="error">Failed to load database: {error}</p></main>;
 
@@ -320,17 +463,49 @@ function App() {
   return (
     <main className="container">
       <nav className="top-nav">
+        <button
+          className={`hamburger-btn ${sidebarOpen ? "open" : ""}`}
+          onClick={() => setSidebarOpen((o) => !o)}
+          aria-label="Toggle menu"
+        >
+          <span /><span /><span />
+        </button>
         <span className="brand">PokeNotes</span>
-        <div className="nav-tabs">
-          <button className={view === "pokedex" ? "active" : ""} onClick={() => setView("pokedex")}>
-            Pokédex
-          </button>
-          <button className={view === "settings" ? "active" : ""} onClick={() => setView("settings")}>
-            Settings
-          </button>
-        </div>
       </nav>
-      {view === "pokedex" ? <PokedexBrowser db={db} /> : <SettingsView db={db} />}
+
+      <div className={`sidebar-backdrop ${sidebarOpen ? "open" : ""}`} onClick={() => setSidebarOpen(false)} />
+      <aside className={`sidebar ${sidebarOpen ? "open" : ""}`}>
+        <div className="sidebar-header">
+          <span className="brand">PokeNotes</span>
+        </div>
+        <nav className="sidebar-nav">
+          {NAV_ITEMS.map((item) => (
+            <button
+              key={item.id}
+              className={view === item.id ? "active" : ""}
+              onClick={() => { setView(item.id); setSidebarOpen(false); }}
+            >
+              <span className="sidebar-icon">{item.icon}</span>
+              {item.label}
+            </button>
+          ))}
+        </nav>
+        <nav className="sidebar-nav sidebar-nav-footer">
+          <button
+            className={view === SETTINGS_NAV_ITEM.id ? "active" : ""}
+            onClick={() => { setView(SETTINGS_NAV_ITEM.id); setSidebarOpen(false); }}
+          >
+            <span className="sidebar-icon">{SETTINGS_NAV_ITEM.icon}</span>
+            {SETTINGS_NAV_ITEM.label}
+          </button>
+        </nav>
+      </aside>
+
+      <div className="app-body">
+        {view === "pokedex" && <PokedexBrowser db={db} />}
+        {view === "teams" && <TeamBuilder db={db} />}
+        {view === "settings" && <SettingsView db={db} />}
+      </div>
     </main>
   );
 }
