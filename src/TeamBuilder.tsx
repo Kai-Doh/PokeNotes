@@ -221,7 +221,7 @@ function StatComparisonChart({
   );
 }
 
-function MiniStatBar({ label, value }: { label: string; value: number }) {
+export function MiniStatBar({ label, value }: { label: string; value: number }) {
   const pct = Math.min(100, (value / 200) * 100);
   return (
     <div className="mini-stat-row">

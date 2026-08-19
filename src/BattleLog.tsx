@@ -21,9 +21,9 @@ import {
   type ChecklistItem,
 } from "./db/checklistQueries";
 import { normalizeKey } from "./showdownFormat";
-import { ConfirmModal, ItemIcon, PickerModal, TypeBadge } from "./TeamBuilder";
-import { REAL_TYPES } from "./constants/gameData";
-import type { Team } from "./types/team";
+import { ConfirmModal, ItemIcon, MiniStatBar, PickerModal, TypeBadge } from "./TeamBuilder";
+import { calcStat, natureModFor, NATURES, REAL_TYPES, STATS } from "./constants/gameData";
+import type { Team, TeamMemberDisplay } from "./types/team";
 import {
   NOTE_TAGS,
   type Battle, type BattleListEntry, type BattleNote, type BattlePokemonDisplay, type ScoutedSetEntry,
@@ -80,6 +80,35 @@ function TeamPreviewGrid({
             {rev?.ability && <span className="battle-preview-ability">{humanize(rev.ability)}</span>}
           </div>
         );
+      })}
+    </div>
+  );
+}
+
+interface StatSpread {
+  natureName: string | null;
+  evs: Record<string, number> | null;
+  ivs: Record<string, number> | null;
+  level: number;
+}
+
+/** Six-stat mini bar chart for a battle roster card. When the real EVs/nature
+    aren't known (any opponent, or "mine" with no linked team) evs/ivs come in
+    null and fall back to 0 EV / 31 IV / neutral nature at level 50 -- the same
+    baseline Speed Tiers calls "Base" -- clearly labeled as an estimate rather
+    than presented as if it were the opponent's actual set. */
+function MonStatRows({ base, spread, estimated }: { base: PokemonRow; spread: StatSpread; estimated: boolean }) {
+  const nature = NATURES.find((n) => n.name === spread.natureName);
+  return (
+    <div className="battle-mon-stats">
+      {estimated && <span className="battle-mon-stats-note">Est. · Lv.{spread.level}, spread unknown</span>}
+      {STATS.map((s) => {
+        const baseStat = (base as unknown as Record<string, number>)[`base_${s.key}`];
+        const iv = spread.ivs?.[s.key] ?? 31;
+        const ev = spread.evs?.[s.key] ?? 0;
+        const mod = s.key === "hp" ? 1 : natureModFor(nature, s.key);
+        const value = calcStat(baseStat, iv, ev, spread.level, s.key === "hp", mod);
+        return <MiniStatBar key={s.key} label={s.label} value={value} />;
       })}
     </div>
   );
@@ -984,12 +1013,21 @@ function EditableOpponentRoster({
         const abilities = abilitiesByPokemon.get(r.pokemon_id) ?? [];
         const moveIds = [r.move1_id, r.move2_id, r.move3_id, r.move4_id];
         const moveNames = [r.move1_name, r.move2_name, r.move3_name, r.move4_name];
+        const base = allPokemon.find((p) => p.id === r.pokemon_id);
         return (
           <div key={r.id} className="manual-mon-card">
             <div className="manual-mon-card-header">
               {r.pokemon_sprite && <img src={r.pokemon_sprite} alt="" className="battle-roster-sprite" />}
               <span className="battle-roster-name">{r.pokemon_name}</span>
             </div>
+
+            {base && (
+              <MonStatRows
+                base={base}
+                spread={{ natureName: null, evs: null, ivs: null, level: 50 }}
+                estimated
+              />
+            )}
 
             <div className="manual-mon-field">
               <button
@@ -1108,6 +1146,8 @@ function BattleDetailView({
   const [oppPokemon, setOppPokemon] = useState<BattlePokemonDisplay[]>([]);
   const [notes, setNotes] = useState<BattleNote[]>([]);
   const [formats, setFormats] = useState<FormatRow[]>([]);
+  const [allPokemon, setAllPokemon] = useState<PokemonRow[]>([]);
+  const [myTeamMembers, setMyTeamMembers] = useState<TeamMemberDisplay[]>([]);
   const [confirmingDelete, setConfirmingDelete] = useState(false);
 
   async function reload() {
@@ -1116,13 +1156,24 @@ function BattleDetailView({
     setMyPokemon(await getBattleMyPokemon(db, battleId));
     setOppPokemon(await getBattleOpponentPokemon(db, battleId));
     setNotes(await listBattleNotes(db, battleId));
+    setMyTeamMembers(b?.my_team_id ? await getTeamMembers(db, b.my_team_id) : []);
   }
 
   useEffect(() => {
     reload();
     getFormats(db).then(setFormats);
+    listPokemon(db).then(setAllPokemon);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [db, battleId]);
+
+  // Real EVs/nature/level when "mine" is linked to a saved team (matched by
+  // species, since battle_my_pokemon doesn't itself store a stat spread) --
+  // falls back to the same unknown-spread estimate as the opponent otherwise.
+  const myTeamMemberByPokemon = useMemo(
+    () => new Map(myTeamMembers.map((m) => [m.pokemon_id, m])),
+    [myTeamMembers],
+  );
+  const pokemonById = useMemo(() => new Map(allPokemon.map((p) => [p.id, p])), [allPokemon]);
 
   const teraAllowed = battle?.format_id
     ? parseFormatRuleset(formats.find((f) => f.id === battle.format_id)?.ruleset ?? null).tera_allowed !== false
@@ -1157,32 +1208,54 @@ function BattleDetailView({
 
   const revealed = (list: BattlePokemonDisplay[]) => (
     <ul className="battle-roster-list">
-      {list.map((m) => (
-        <li key={m.id}>
-          {m.pokemon_sprite
-            ? <img src={m.pokemon_sprite} alt={m.pokemon_name} className="battle-roster-sprite" />
-            : <div className="battle-roster-sprite battle-preview-sprite-empty" />}
-          <div className="battle-roster-info">
-            <div className="battle-roster-name-row">
-              <span className="battle-roster-name">{m.pokemon_name}</span>
-              <TypeBadge type={m.type1} />
-              {m.type2 && <TypeBadge type={m.type2} />}
-            </div>
-            <div className="battle-roster-tags">
-              {m.item_name && (
-                <span className="battle-roster-detail">
-                  <ItemIcon x={m.item_sprite_x} y={m.item_sprite_y} /> {m.item_name}
-                </span>
+      {list.map((m) => {
+        const base = pokemonById.get(m.pokemon_id);
+        const member = myTeamMemberByPokemon.get(m.pokemon_id);
+        return (
+          <li key={m.id}>
+            {m.pokemon_sprite
+              ? <img src={m.pokemon_sprite} alt={m.pokemon_name} className="battle-roster-sprite" />
+              : <div className="battle-roster-sprite battle-preview-sprite-empty" />}
+            <div className="battle-roster-info">
+              <div className="battle-roster-name-row">
+                <span className="battle-roster-name">{m.pokemon_name}</span>
+                <TypeBadge type={m.type1} />
+                {m.type2 && <TypeBadge type={m.type2} />}
+              </div>
+              <div className="battle-roster-tags">
+                {m.item_name && (
+                  <span className="battle-roster-detail">
+                    <ItemIcon x={m.item_sprite_x} y={m.item_sprite_y} /> {m.item_name}
+                  </span>
+                )}
+                {m.ability_name && <span className="battle-roster-detail">{m.ability_name}</span>}
+                {m.tera_type && <span className="battle-roster-detail">Tera {m.tera_type}</span>}
+                {[m.move1_name, m.move2_name, m.move3_name, m.move4_name].filter(Boolean).map((mv) => (
+                  <span key={mv} className="battle-roster-detail">{mv}</span>
+                ))}
+              </div>
+              {base && (
+                member
+                  ? (
+                    <MonStatRows
+                      base={base}
+                      spread={{
+                        natureName: member.nature,
+                        evs: { hp: member.ev_hp, atk: member.ev_atk, def: member.ev_def, spa: member.ev_spa, spd: member.ev_spd, spe: member.ev_spe },
+                        ivs: { hp: member.iv_hp, atk: member.iv_atk, def: member.iv_def, spa: member.iv_spa, spd: member.iv_spd, spe: member.iv_spe },
+                        level: member.level,
+                      }}
+                      estimated={false}
+                    />
+                  )
+                  : (
+                    <MonStatRows base={base} spread={{ natureName: null, evs: null, ivs: null, level: 50 }} estimated />
+                  )
               )}
-              {m.ability_name && <span className="battle-roster-detail">{m.ability_name}</span>}
-              {m.tera_type && <span className="battle-roster-detail">Tera {m.tera_type}</span>}
-              {[m.move1_name, m.move2_name, m.move3_name, m.move4_name].filter(Boolean).map((mv) => (
-                <span key={mv} className="battle-roster-detail">{mv}</span>
-              ))}
             </div>
-          </div>
-        </li>
-      ))}
+          </li>
+        );
+      })}
     </ul>
   );
 

@@ -3119,6 +3119,24 @@ section h3 {
   padding: 0.1rem 0.4rem;
 }
 
+.battle-mon-stats {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  width: 100%;
+  max-width: 220px;
+  margin-top: 0.5rem;
+  padding-top: 0.5rem;
+  border-top: 1px solid #2c2d34;
+}
+
+.battle-mon-stats-note {
+  font-size: 0.68rem;
+  color: #6f7079;
+  font-style: italic;
+  margin-bottom: 0.1rem;
+}
+
 .battle-detail-notes-general {
   border-top: 1px solid #33343c;
   padding-top: 0.85rem;
